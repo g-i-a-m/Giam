@@ -1,0 +1,138 @@
+SDP组成:会话数据,网络描述,流描述,安全描述,组信息及QOS描述
+
+v=0						// SDP的版本
+o=- 5653407175804885035 2 IN IP4 127.0.0.1	// <主机登录名><会话id><会话版本><网络类型><地址类型><地址>
+s=-						// 文本会话名称
+t=0 0					// 会话的开始和停止时间
+a=group:BUNDLE 0 1 2	// 表示mid为0,1,2的3个媒体流共用一个传输通道进行传输,通过ssrc区分.
+a=extmap-allow-mixed	// 允许混合使用一字节和两字节RTP报头扩展
+a=msid-semantic: WMS CAWKFR4DNw9t8okssK7Ejs7Irw5qhQN9myWo	// WMS表示Webrtc Media Streams,后边是msid
+
+m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 106 110			// 媒体描述,可以是audio/video/application <媒体类型><端口号配合'c='><协议><有效负载类型列表>
+															// SAVPF中的S代表加密的RTP, F代表支持RTCP-based Feedback
+c=IN IP4 0.0.0.0		// <网络类型><地址类型><地址> sdp协议中配合上一行的端口字段用于确定传输地址,但webrtc使用ICE确定传输地址.
+a=rtcp:9 IN IP4 0.0.0.0	// rtcp数据包的传递地址及端口
+a=ice-ufrag:UhnM		// 安全验证标识符
+a=ice-pwd:PQwPfQAlomoZO+9keMBeWcj9	//安全验证口令
+a=ice-options:trickle	// trickle:一边搜集candidate一边连通性检查,可以缩短ICE建立连接的时间. 
+						// renomination:允许controlling方动态重新提名新的candidate对(默认Offer方为controlling).
+a=ice-lite:Full			// Full:ICE连通性双向探测.  Lite:Lite方只被动应答bind request而不发起探测(不能双方都是Lite模式,一般offer方为Full,answer方为Lite)
+a=fingerprint:sha-256 53:B3:B2:0F:28:82:DE:93:19:34:B5:7A:D8:49:C3:2A:C0:C9:4A:64:D6:3D:32:DA:03:79:0E:95:E1:12:F3:7D	//DTLS握手时,验证证书的签名,防止客户端和服务器的证书被篡改
+a=setup:actpass			// DTLS握手的方式 actpass:由对方选择角色   active:发起clienthello端    passive:应答serverhello端
+a=mid:0					// 每个`m=`行都有一个mid
+a=extmap:14 urn:ietf:params:rtp-hdrext:ssrc-audio-level					// rtp扩展头,音频音量
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time	// rtp扩展头,24位的相对时间,可与sr报告中ntp时间计算每包的ntp时间戳.
+a=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01	// 记录数据包延迟并反馈给发送端.
+a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid							// rtp扩展头,mid;在rtp扩展头中会携带对应'm='的标识
+a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id				// rtp扩展头,simulcast联播各子流rid
+a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id		// rtp扩展头,联播子流用于重传的rid
+a=sendrecv					// 指定本端是既发送又接收模式
+a=msid:- 9247b67f-944e-4688-9612-99bc6905b581	//???
+a=rtcp-mux					// rtp和rtcp共用同一个端口
+a=rtpmap:111 opus/48000/2	// 支持的编码及采样率列表项
+a=rtcp-fb:111 transport-cc	// 对应编码列表项的类型所支持的反馈信息的类型
+a=fmtp:111 minptime=10;useinbandfec=1	// 111的编解码参数   minptime最小打包毫秒数(对实时性和数据报包个数产生影响)   useinbandfec使用webrtc音频带内FEC进行前向纠错,由Opus编解码器实现.
+a=rtpmap:103 ISAC/16000
+a=rtpmap:104 ISAC/32000
+a=rtpmap:9 G722/8000
+a=rtpmap:106 CN/32000
+a=rtpmap:110 telephone-event/48000
+a=ssrc-group:FID 3301189914 1207140420							// RTX,正常包的ssrc和重传包的ssrc
+a=ssrc:3301189914 cname:gnEz72PZ2F+pMAQu						// cname唯一标识一个客户端,也会出现在rtcp-DESC包用于音视频同步识别是否属于同组
+a=ssrc:3301189914 msid:- 3520e6d6-0da3-495b-a5dc-1f6f1f0b94a8	// <MediaStream ID> <MediaStreamTrack ID>
+a=ssrc:3301189914 mslabel:-										// mediastream id(1个mediastream可对应多个mediastream track,例如simulcast一个源对应3个质量的流)
+a=ssrc:3301189914 label:3520e6d6-0da3-495b-a5dc-1f6f1f0b94a8	// mediastream track id(1个mediastream track可对应多个rtp stream,例如其中一个质量的流分为正常和重传)
+a=ssrc:1207140420 cname:gnEz72PZ2F+pMAQu
+a=ssrc:1207140420 msid:- 3520e6d6-0da3-495b-a5dc-1f6f1f0b94a8
+a=ssrc:1207140420 mslabel:-
+a=ssrc:1207140420 label:3520e6d6-0da3-495b-a5dc-1f6f1f0b94a8
+
+m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101 102 121			// 媒体描述,可以是audio/video/application <媒体类型><端口号配合'c='><协议><有效负载类型列表>
+																// SAVPF中的S代表加密的RTP, F代表支持RTCP-based Feedback
+c=IN IP4 0.0.0.0
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:UhnM
+a=ice-pwd:PQwPfQAlomoZO+9keMBeWcj9
+a=ice-options:trickle
+a=fingerprint:sha-256 53:B3:B2:0F:28:82:DE:93:19:34:B5:7A:D8:49:C3:2A:C0:C9:4A:64:D6:3D:32:DA:03:79:0E:95:E1:12:F3:7D
+a=setup:actpass
+a=mid:1
+a=extmap:1 urn:ietf:params:rtp-hdrext:toffset											// 采样时间与发送时间之差
+a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time					// 绝对发送时间
+a=extmap:3 urn:3gpp:video-orientation													// 视频方向
+a=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01	// 传输层序列号,且开启rtcp传输层反馈twcc.
+a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay					// 
+a=extmap:6 http://www.webrtc.org/experiments/rtp-hdrext/video-content-type				// 视频类型,默认值00, 01代表是屏幕共享.
+a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/video-timing					// 
+a=extmap:8 http://www.webrtc.org/experiments/rtp-hdrext/color-space						// 色彩空间信息,是正确呈现高动态范围(HDR)视频流所需的
+a=extmap:9 urn:ietf:params:rtp-hdrext:sdes:mid											// 
+a=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id								// 
+a=extmap:11 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id						// 
+a=sendrecv
+a=msid:CAWKFR4DNw9t8okssK7Ejs7Irw5qhQN9myWo 05995d27-08f7-4c96-9b7e-a116d1a69403
+a=rtcp-mux					// rtp和rtcp共用同一个端口
+a=rtcp-rsize				// 支持reduced-size RTCP packets
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 goog-remb
+a=rtcp-fb:96 transport-cc
+a=rtcp-fb:96 ccm fir
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=rtpmap:102 H264/90000
+a=rtcp-fb:102 goog-remb
+a=rtcp-fb:102 transport-cc
+a=rtcp-fb:102 ccm fir
+a=rtcp-fb:102 nack
+a=rtcp-fb:102 nack pli
+a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f
+a=rtpmap:121 rtx/90000
+a=fmtp:121 apt=102
+a=rid:h send
+a=rid:m send
+a=rid:l send
+a=simulcast:send h;m;l
+
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+c=IN IP4 0.0.0.0
+a=ice-ufrag:UhnM
+a=ice-pwd:PQwPfQAlomoZO+9keMBeWcj9
+a=ice-options:trickle
+a=fingerprint:sha-256 53:B3:B2:0F:28:82:DE:93:19:34:B5:7A:D8:49:C3:2A:C0:C9:4A:64:D6:3D:32:DA:03:79:0E:95:E1:12:F3:7D
+a=setup:actpass
+a=mid:2
+a=sctp-port:5000
+a=max-message-size:262144
+
+
+candidate个字段含义及生成规则(比如优先级如何给值).
+示例1:
+	"1435463253 1 udp 2122260223 192.168.85.1 62933 typ host generation 0 ufrag azVZ"
+示例2:
+	"3402544783 1 udp 1685987071 192.168.2.222 12654 typ srflx raddr 192.168.10.141 rport 62934 generation 0 ufrag azVZ network-id 2 network-cost 10"
+格式:
+	foundation
+	component-id
+    transport
+    priority
+    connection-address//from RFC 4566
+    port//from RFC 4566
+    cand-type
+    [relate-addr]
+    [relate-port]
+    *extension-att-name extension-att-value
+解释:
+	foundation = 1435463253 //相同类型候选者都相同值,用于标识candidate是否来自同一stun服务器或turn服务器;用于优化ICE冻结算法性能.
+	component-id = 1		//标识candidate是用于rtp的为1,rtcp的为2;sdp中指定了rtcp-mux属性则无需为rtcp生成对应candidate.
+	transport = udp			//传输类型
+	priority = 2122260223	//优先级
+	ip = 192.168.85.1		//地址
+	port = 62933			//端口
+	type = host				//host:主机(内网)地址  srflx:NAT映射地址  relay:turn服务器分配的中继地址  prflx:本地生成的对端映射地址.
+	[relatedAddress = 192.168.10.141]	//出现在srflx类型candidate中,指示映射地址关联的内网本地地址
+	[relatedPort = 62934]	//同上
+	generation = 0			//第0代候选
+	usernameFragment = "azVZ"
+	network-id = 2			//网卡标识 2
+	network-cost = 10		//网络成本
