@@ -65,11 +65,13 @@ ICE:
 		●按协议类型(TCP/UDP,而非candidate type,host类型可以和srflx配对的),把本地与对端相同协议类型的candidate一一配对加入checklist;
 		●收到bind-request包后,如果该包源地址并不在agent的对端candidate集合中,则产生一个prflx类型candidate,然后把该candidate添加到对端candidate集合里,产生相应的candidate-pair对并启动检查.
 		●本地每收集到一个candidate就与所有同协议类型的对端candidate组成一对,每收到一个对端的candidate就与本地所有同协议类型的candidate组成一对并添加到agent的checklist.
-	5>.候选地址对的连通性检查:
+	5>.连通性检查:
 		●Full模式:双方都要进行连通性检查(发送binding request并等待接收bind success);sdp中不含ice-lite属性则是full模式.
-		●Lite模式:Lite一方不用主动进行连通性检查且只搜集host类型的candidate(只需要response对端的bind-request请求).
+		●Lite模式:Lite一方不用主动进行连通性检查且只搜集host类型的candidate(只需要response对端的bind-request请求),为部署在公网的端更容易的支持ICE.
 		●对checklist中的candidate-pair对进行检查,full模式双方都向对端发送bind-request然后对端应答bind-success; lite模式只有controlling一方发起bind-request请求,controlled一方只需应答请求和接受提名.
 		●当两端角色都为controlling或者controlled角色时,在连通性检查阶段会比较binding-request消息中的tie-breaker属性的值,值比较大的则被认为是controlling,同时回应487错误给对端切换角色.
+		●作为一种优化措施,一旦收到对端的检查消息,应答后就立即对该候选地址对进行一次连通性检查调度而不必等待本地调度策略.这样可加速找到合适candidate-pair,被称之为triggered check.
+		●对于使用相同协议,源于同一网卡的同类型candidate,具有相同的foundation属性;对于具有相同foundation的多个候选地址对,只会启动其中一个的连通性检查,而其他的则处于frozen状态,当连通性检测成功再激活一个其它具有相同foundation的候选地址对.这样就阻止了哪些表面上看起来很有吸引力实际上会失败的那些检查.
 		●自己的实际实现:不配置stun地址即只产生host类型的candidate,二是直接丢弃对端发过来的candidate即不产生candiate-pair也无法主动向对端检查连通性,但会等对端发过来bind-request时产生一个candidate-pair,然后服务端会对这个candidate-pair做服务端到客户端方向的连通性检查(和标准的ice-lite模式的区别也就在这).
 		●如果有丢包根据RTT进行判断和重传,直到30秒超时检查连通性失败;RTT默认值3秒,之后根据发送请求时间及接收到应答时间之差计算.
 	6>.提名candidate-pair选择传输通道:
@@ -77,6 +79,9 @@ ICE:
 		●controlled角色:接受对端发起的提名请求的一端.
 		●连通判断条件:controlled一端收到对端的bind-request提名一个candidate-pair; controlling这端收到接受提名一端应答的bind-success.
 		●提名成功后把candidate-pair放到selected-pair用于收发数据,删除低于提名的candidate-pair及未开始检查的及检查失败的candidate-pair.
+		RFC5245对提名定义了两种模式:
+			常规模式:controlling端会让检测流程持续进行,直到每个流都存在至少一个有效的candidate pair,然后才选择一个candidate pair,再次发送stun请求并带上use-candidate属性进行提名.
+			激进模式:controlling端会在连通性检查的STUN请求中设置提名标记,一旦连通性检查成功ICE流程就完成了.
 	7>.定时对selectedPair进行心跳检测,超过t1时间状态转变成disconnected,超过t2时间状态转变成failed并删除本地所有candidate-pair.
 		ICE Transport状态(对众多Candidate-pair连通性检查结果的汇总):
 			New:ICE模块刚创建还未开始连通性检查.
@@ -107,6 +112,10 @@ ICE:
 			未被剪枝优先(被剪枝的candidate-pair的写入状态还会被直接置为STATE_TIMEOUT).
 			RTT较小者优先(初始默认值3秒,测量新的rtt后按一定权重迭代更新,且测量的rtt未去除对端处理耗时的影响).
 		写入状态和candidate-pair状态区别:写入状态控制着连通性检查的过程和结果,且表达的更多细节,比如STATE_WRITE_UNRELIABLE表示有一部分应答收到了一些没收到,但检查还在进行并未到达失败;而candidate-pair状态中要么Successed要么Failed.
+		candidate-pair优先级数值由3个因子决定,权重由高到低依次为:
+			type preference:是candidate类型,host > srflx > prflx > relay
+			local preference:在多网卡主机或双栈主机中表示IP地址的优选顺序,
+			component ID:就是本candidate中的component ID值. component ID用于标识本candidate是为rtp传输而生成还是为rtcp而生成,如果指定合并传输则component ID值只有一种.
 	9>.连通性检查及传输通道切换:
 		当收集到本地Candidate,收到Remote Candidate时会创建connection(candidate-pair),然后触发对所有当前candidate-pair进行排序和状态更新,其中会启动对candidate-pair的ping定时任务. 优先ping已选中的连接(也需满足发送间隔),然后才会对其他未选中连接一个个的ping连通性检查,检查时connection状态发生变化则触发connection排序和切换提名.
 	10>.ICE断线重连逻辑:
