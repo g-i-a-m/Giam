@@ -97,7 +97,9 @@
 		std::atomic原子模板类型
 		std::call_once只调用一次,用于实现单例.
 		std::condition_variable条件变量(注意须用mutex进行保护,详见APUE)
-		std::future与std::promise相当于golang中的channel的两端,用于传递数据或发送信号.
+		std::promise与std::future相当于golang中的channel的两端,用于传递数据或发送信号.
+			std::promise用于返回std::future对象及写入数据.
+			std::future用于阻塞等待接收对应std::promise写入的数据.
 		thread_local 修饰的变量类似于静态/全局变量,只不过该变量作用域为线程作用域,如果线程内有多个对象包含该变量则共享同一个.
 	7>.函数对象封装与参数绑定
 		std::function 可调用对象的包装器,可容纳除了类普通成员函数外的所有可能可调用的对象.用统一的方式处理函数/函数对象,以允许保存和延迟执行它们.
