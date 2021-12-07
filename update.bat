@@ -1,12 +1,22 @@
 @echo off
+set arg1=%1%
+if "%arg1%"=="" (
+	set arg1="push"
+)
 cd %~dp0
+
 :begin
-git push
+if "%arg1%"=="push" (
+	git push
+) else (
+	git pull
+)
+
 if not %errorlevel% == 0 (
-	echo Push failed, try to push it again...
+	echo %arg1% failed, try it again...
 	echo;
 	goto begin
 ) else (
-	echo push success!
+	echo %arg1% success!
 	pause
 )
