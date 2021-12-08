@@ -1,7 +1,7 @@
 @echo off
 set arg1=%1%
 if "%arg1%"=="" (
-	set arg1="push"
+	set arg1=push
 )
 cd %~dp0
 
