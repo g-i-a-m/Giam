@@ -1,15 +1,9 @@
 boost
-日期 : timer、data_time、chrono
-定时器 : 
-#include <iostream>  
-#include <boost/asio.hpp>  
-#include <boost/date_time/posix_time/posix_time.hpp>  
-int main()  
-{  
-  boost::asio::io_service io;  
-  boost::asio::deadline_timer t(io, boost::posix_time::seconds(5));  
-  t.asyn_wait(func);
-  io.run;//线程
-  std::cout << "Hello, world!\n";  
-  return 0;  
-}
+
+Asio:
+	即异步IO,可以平台无关性地异步处理数据,而不需阻塞等待处理结果.
+	Asio实现异步IO基于两个概念:IO服务和IO对象.
+		IO服务抽象操作系统的接口,是进行异步的核心,而IO对象则用于初始化特定的操作.
+		Asio中提供了一个类boost::asio::io_service作为IO服务;对支持的操作分别实现IO对象,比如boost::asio::ip::tcp::socket,boost::asio::deadline_timer等.
+		
+		
