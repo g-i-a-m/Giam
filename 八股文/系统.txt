@@ -191,3 +191,8 @@
 37>.linux如何设置开机自启动
 38>.netstat tcpdump ipcs ipcrm
 39>.cpu 内存 硬盘 等等与系统性能调试相关的命令必须熟练掌握
+
+
+1>.对应平台下载对应平台代码
+2>.vpn
+3>.depot_tools不要用旧版本
