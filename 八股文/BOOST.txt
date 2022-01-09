@@ -1,9 +1,23 @@
 boost
 
-Asio:
-	即异步IO,可以平台无关性地异步处理数据,而不需阻塞等待处理结果.
-	Asio实现异步IO基于两个概念:IO服务和IO对象.
-		IO服务抽象操作系统的接口,是进行异步的核心,而IO对象则用于初始化特定的操作.
-		Asio中提供了一个类boost::asio::io_service作为IO服务;对支持的操作分别实现IO对象,比如boost::asio::ip::tcp::socket,boost::asio::deadline_timer等.
-		
-		
+Asio:即异步IO,可以平台无关性地异步处理数据,而不需阻塞等待处理结果.
+	1>.Asio实现异步基于两个概念:IO服务和IO对象.IO服务抽象操作系统的接口,是进行异步的核心,而IO对象则用于初始化特定的IO操作.
+		●boost::asio::io_service作为IO服务,而IO对象有:
+			boost::asio::ip::tcp::socket 用于通过TCP网络接发数据.
+			boost::asio::ip::tcp::endpoint 用于描述一个socket的ip和端口,初始化acceptorIO对象.
+			boost::asio::ip::tcp::acceptor 一个TCP监听socket,用于处理监听新的TCP连接.
+			boost::asio::ip::udp::socket 用于通过TCP网络接发数据.
+			boost::asio::deadline_timer 用于定时器功能.
+		●一般首先创建IO服务对象,然后根据IO服务创建IO对象,然后在一个线程中调用run()函数来启动asio并阻塞线程,之后对IO对象进行操作并异步地等待处理结果即可.
+		●同一IO服务的run()函数可以在多个线程中调用,IO事件处理函数将在这些线程中的其中一个线程中进行调用.
+	2>.io.run()在处理完所有异步消息后会判断outstanding_work_的值,为0则从run()函数返回导致IO线程退出无法继续处理后续的IO事件回调.
+		●通过构造对应IO_service对象的boost::asio::io_service::work对象,使对应IO_service对象的outstanding_work_值+1,从而继续阻塞在io.run()中等待处理消息,防止IO线程退出.
+		●在不析构work对象时调用io_service对象的stop成员函数,会使io_service.run()立刻退出,并丢弃所有未完成的消息.
+		●通过io_service::work防止IO线程退出的示例:
+			boost::asio::io_service io_service;
+			boost::asio::io_service::work work(io_service);
+			Thread() {
+				Io_service.run();
+			}
+	3>.扩展Asio:
+		Boost Asio主要支持网络功能,可以通过继承boost::asio::basic_io_object基类,实现自己的IO对象.
