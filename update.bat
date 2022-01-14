@@ -1,5 +1,6 @@
 @echo off
 set arg1=%1%
+set arg2=%2%
 if "%arg1%"=="" (
 	set arg1=push
 )
@@ -18,5 +19,8 @@ if not %errorlevel% == 0 (
 	goto begin
 ) else (
 	echo %arg1% success!
+	if "%arg2%"=="shutdown" (
+		shutdown -s -t 10
+	)
 	pause
 )

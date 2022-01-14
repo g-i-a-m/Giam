@@ -83,8 +83,14 @@
 			global::free(df);
 	5>.pool_allocator/fast_pool_allocator
 		特点:
-			空闲链表
+			用于替代STL容器的默认分配器.std::list与std::vector的都有默认的分配器模板参数,可以不适用默认而改为pool_allocator/fast_pool_allocator在内存池中分配内存.
 		示例:
+			std::vector<int, boost::pool_allocator<int>> v;
+			for (int i = 0; i < 1000; ++i)
+				v.push_back(i);
+			std::list<int, boost::fast_pool_allocator<int>> l;
+			for (int i = 0; i < 1000; ++i)
+				l.push_back(i);
 	6>.内存池实现原理:
 		申请一批内存块,把内存块加到空闲链表中,每次申请内存时从空闲链表查找一个空闲块返回给用户,如果空闲链表为空则再申请一批内存块并加到空闲链表再继续申请操作,如果系统内存已满则抛出异常或返回NULL.释放内存时,把对应内存块加回空闲链表.
 	7>内存池接口
@@ -94,7 +100,12 @@
 		ordered_free():释放连续的多个内存块.
 		release_memory():释放所有未使用的内存块(在空闲链表中的内存块)给操作系统.
 		purge_memory():释放所有内存块给操作系统,包括正在使用的内存块.
-	8>.定长内存池的缺陷:
+	8>.与智能指针配合实现自动释放
+		A* df=(A*)global::malloc();
+		std::shared_ptr<A> sptr(df, [](A* p){
+			global::free(p);
+		});//把自定义释放函数传递智能指针,在智能指针释放时调用从而自动归还内存给内存池.
+	9>.定长内存池的缺陷:
 		●对于小块内存的使用也占用一个block,有一定的内存浪费.
 			解决方式:把申请内存的请求划分为几类,然后对应到不同块大小的内存池上进行分配.在单例内存池singleton_pool进行初始化时通过第一个参数传递不同的tag类来实例化不同的单例内存池.
 		●内存回收不到系统,导致系统占用内存大小一直处于峰值.
