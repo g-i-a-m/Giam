@@ -52,9 +52,9 @@ ICE:
 			客户端向stun服务器3478端口发送binding request,不含有任何stun属性; stun服务器应答binding success response并携带mapped-addr,XOR-mapped-addr(异或运算,不同为真),应答源地址origin-addr.
 		●relay类型:TURN服务器分配的中继地址,通过此地址为两端进行透传转发.
 			客户端发送Allocate Request UDP,服务端应答Allocate Error 401并携带NONCE和REALM.客户端再次求情Allocate Request UDP并携带NONCE和REALM以及turn服务器注册的用户名,服务器验证通过后应答Allocate success并携带分配的relay地址及保活时间.
-			对端拿到relay-candidate后,向turn服务器发送Create-Permission并携带对端relay地址和自己的用户名请求绑定本端地址和对端的relay地址.turn服务器建立转发关系之后应答成功(需定期发送refresh lifetime保活).
+			对端拿到relay-candidate后,向turn服务器发送Create-Permission并携带对端relay地址和自己的用户名,请求绑定本端地址和对端的relay地址.turn服务器建立转发关系之后应答成功(需定期发送refresh lifetime保活).
 			之后即可通过send/data indication stun包,负载bind-request请求进行连通性检查;
-			连通性检查成功之后可通过send/data-indication或channeldata进行媒体数据的传输.由于indication消息有stun包头及多个stun属性对带宽资源有浪费.所以只有4字节包头的channeldata应运而生,前2字节为channel号,后2字节为荷载长度.
+			通过send/data-indication进行连通性检查,成功之后再通过channel-bindchannel.由于indication消息有stun包头及多个stun属性对带宽资源有浪费.所以只有4字节包头的channeldata应运而生,前2字节为channel号,后2字节为荷载长度.
 			通过channeldata进行中继传输时需要创建channel:
 				客户端发起channel-bind request并携带channel number,要绑定的对端的relay addr,用于验证的用户名等信息,turn服务器应答channel-bind success标识通道号与对端relay地址绑定成功,之后即可通过channeldata包进行数据传输了.
 		●prflx类型:在收到的binding-request请求中,源地址不能匹配任何现存远端候选地址,则在本地生成一个prflx类型的candidate.
@@ -83,7 +83,7 @@ ICE:
 		●提名成功后把candidate-pair放到selected-pair用于收发数据,删除低于提名的candidate-pair及未开始检查的及检查失败的candidate-pair.
 		RFC5245对提名定义了两种模式:
 			常规模式:controlling端会让检测流程持续进行,直到每个流都存在至少一个有效的candidate pair,然后才选择一个candidate pair,再次发送stun请求并带上use-candidate属性进行提名.
-			激进模式:controlling端会在连通性检查的STUN请求中设置提名标记,一旦连通性检查成功ICE流程就完成了.
+			激进模式:controlling端会在连通性检查的STUN请求中就直接设置提名标记,一旦连通性检查成功ICE流程就完成了.
 	7>.定时对selectedPair进行心跳检测,超过t1时间状态转变成disconnected,超过t2时间状态转变成failed并删除本地所有candidate-pair.
 		ICE Transport状态(对众多Candidate-pair连通性检查结果的汇总):
 			New:ICE模块刚创建还未开始连通性检查.
