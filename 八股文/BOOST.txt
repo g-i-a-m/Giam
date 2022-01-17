@@ -144,9 +144,21 @@
 		匿名条件变量:与命名条件变量类似,只是条件变量和互斥锁需在共享内存中创建.
 
 四.lockfree:无锁容器
-	boost::lockfree::queue
-	boost::lockfree::spsc_queue
-	boost::lockfree::stack
+	无锁数据结构依赖于原子操作,同步在用户空间完成,所以不容易出现优先级翻转.
+	boost::lockfree::queue 适用于多生产者多消费者
+		默认为可变缓冲区长度,如果添加到队列的数据超过队列长度则动态分配额外内存,内部是有锁的因为在动态分配额外内存时需要加锁.
+		采用固定长度的队列由于禁用了动态内存分配,确保了无锁行为.
+		queue<int, fixed_sized<true>> queue_{10000};//固定长度为10000
+		queue_.push(i);
+		queue_.pop();
+	boost::lockfree::spsc_queue 适用于单一生产者/单一消费者,对此做了优化
+		队列缓存采用循环缓冲区实现,队列长度可通过构造函数参数或模板参数指定.
+		spsc_queue<int, boost::lockfree::capacity<100>> queue_;//或者boost::lockfree::spsc_queue<int> queue_{100};指定队列缓冲区长度为100.
+		queue_.push(i);//线程1存放数据
+		queue_.pop();//线程2中取数据而不用加锁.
+		queue_.consume_one([](int i){ sum += i; });//线程2中取数据而不用加锁.
+	boost::lockfree::stack 适用于多生产者多消费者
+		行为特性与boost::lockfree::queue一致.
 
 MPI库
 
