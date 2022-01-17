@@ -110,7 +110,8 @@
 			解决方式:把申请内存的请求划分为几类,然后对应到不同块大小的内存池上进行分配.在单例内存池singleton_pool进行初始化时通过第一个参数传递不同的tag类来实例化不同的单例内存池.
 		●内存回收不到系统,导致系统占用内存大小一直处于峰值.
 			解决方式:修改内存池分配和"回收"机制,尽量优先分配内存地址靠前的可用内存块,然后定期释放内存块.
-Interprocess库:进程间通信
+
+三.Interprocess库:进程间通信
 	共享内存:
 		tips:和XSI共享内存一样,不显式释放或进程异常退出将造成内存泄漏.
 		shared_memory_object shdmem{open_or_create, "Boost", read_write};//创建共享存储
@@ -142,10 +143,10 @@ Interprocess库:进程间通信
 			named_cnd.wait(lock);
 		匿名条件变量:与命名条件变量类似,只是条件变量和互斥锁需在共享内存中创建.
 
-无锁容器:
+四.lockfree:无锁容器
 	boost::lockfree::queue
-	boost::lockfree::stack
 	boost::lockfree::spsc_queue
+	boost::lockfree::stack
 
 MPI库
 
