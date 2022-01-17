@@ -110,7 +110,42 @@
 			解决方式:把申请内存的请求划分为几类,然后对应到不同块大小的内存池上进行分配.在单例内存池singleton_pool进行初始化时通过第一个参数传递不同的tag类来实例化不同的单例内存池.
 		●内存回收不到系统,导致系统占用内存大小一直处于峰值.
 			解决方式:修改内存池分配和"回收"机制,尽量优先分配内存地址靠前的可用内存块,然后定期释放内存块.
-Interprocess库:进程间通信功能
+Interprocess库:进程间通信
+	共享内存:
+		tips:和XSI共享内存一样,不显式释放或进程异常退出将造成内存泄漏.
+		shared_memory_object shdmem{open_or_create, "Boost", read_write};//创建共享存储
+		shdmem.truncate(1024);//指定共享内存大小为1024(默认大小为0).
+		mapped_region region{shdmem, read_write};//通过持有共享内存的对象,把共享内存映射到进程地址空间.
+		int *val = static_cast<int*>(region.get_address());//取出共享内存起始地址,并强制类型转换成int指针.
+		*val = 99;//把数值99赋值到共享内存的起始4字节.
+		shared_memory_object::remove("Boost");//通过静态函数删除共享内存.
+		或者通过 boost::interprocess::remove_shared_memory_on_destroy共享内存自动销毁器来删除共享内存
+	托管共享内存:
+		managed_shared_memory managed_shm{open_or_create, "Boost", 1024};
+		int *i1 = managed_shm.find_or_construct<int>("int_1")(97);//在共享内存中创建对象并初始化
+		std::pair<int*, std::size_t> p = managed_shm.find<int>("int_1");//根据对象名字查找共享内存中的对象
+		std::cout << *p.first << '\n';
+		managed_shm.destroy<int>("int_1");//根据对象名字从共享内存中删除对象
+	同步:
+		命名互斥锁:由操作系统创建,根据名字查找/引用.
+			named_mutex named_mtx{open_or_create, "mtx"};
+			named_mtx.lock();/try_lock()/timed_lock()
+		匿名互斥锁:须在共享内存中创建
+			managed_shared_memory managed_shm{open_or_create, "shm", 1024};
+			interprocess_mutex *mtx = managed_shm.find_or_construct<interprocess_mutex>("mtx")();
+			mtx->lock();/try_lock()/timed_lock()
+		命名条件变量:与普通条件变量类似,需搭配互斥锁
+			named_mutex named_mtx{open_or_create, "mtx"};
+			named_condition named_cnd{open_or_create, "cnd"};
+			scoped_lock<named_mutex> lock{named_mtx};
+			named_cnd.notify_all();
+			named_cnd.wait(lock);
+		匿名条件变量:与命名条件变量类似,只是条件变量和互斥锁需在共享内存中创建.
+
+无锁容器:
+	boost::lockfree::queue
+	boost::lockfree::stack
+	boost::lockfree::spsc_queue
 
 MPI库
 
