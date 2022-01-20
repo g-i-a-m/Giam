@@ -9,6 +9,7 @@
 2>.关键字
 	auto 自动类型推导
 	decltype(变量) 编译期间计算,推导类型
+	alignas/alignof指定或获取类的内存对齐要求.
 	constexpr 建议编译器进行编译期优化或运算,修饰函数时使函数在编译期会成为常量表达式
 		constexpr变量必须在编译时进行初始化,而const变量的初始化可延迟到运行时.
 		constexpr函数限制持有和返回的类型为字面值类型(除void外的内置类型),本质上在编译期间可确定值.函数体只能有一行return语句.
@@ -18,11 +19,9 @@
 		3>.显式不隐藏基类函数
 		4>.修改继承来的成员访问权限(public protected等)
 		5>.C++11为模板定义别名
-	noexcept 不抛出异常
+	noexcept 作为后缀指示不抛出异常;作为运算符判断表达式是否会抛出异常.
 	nullptr 空指针类型,编译器会做类型检查,而NULL可以被定义为整型的0或0值的指针,以避免函数重载时的编译器如何选择困惑(形参为void*与int)
 	explicit 用于修饰构造函数;有时可将构造函数用作自动类型转换函数,这种自动类型转换是预料之外的行为,explicit关键字用来关闭这种自动类型转换特性.
-	volatile 指示编译不要对修饰的变量进行优化,每次读取都从内存中读而不是寄存器.volatile修饰符告诉编译器不要在两个操作之间把变量缓存在寄存器中.
-		编译器种技术叫数据流分析,分析程序中的变量在哪里赋值,使用,失效;分析结果用于常量合并,常量传播等优化,进一步提升执行效率.
 	override 显式声明本关键字修饰的函数是重载
 	final 显式声明本关键字修饰的函数不允许子类重载,并且final修饰的函数所属类不能被继承.
 3>.序列for循环
@@ -36,7 +35,7 @@
 	A(const A&) = default; //指定默认拷贝构造函数
 	A& operator=(const A&) = delete;//禁止编译期生成默认赋值操作符函数
 
-6>.可在定义模板时给与模板一个默认的类型
+6>.模板默认类型参数
 	template<typename T1=int, typename T2=std::string>
 
 7>.右值引用
@@ -59,7 +58,8 @@
 		std::array 定长数组,好处是在越界访问时抛出异常
 		std::forward_list 单向链表,特定场景下使用比std::list节省了内存提升性能
 		std::tuple<...> 元组
-	2>.string与各种数值类型之间的转换.比如:
+		容器的emplace()插入函数没有中间变量的创建和销毁操作.
+	2>.string与数值类型转换.比如:
 		std::stoi()
 		std::stod()
 		std::stof()
@@ -100,14 +100,13 @@
 		std::lock
 			std::lock_guard<mutex> 自动加解锁
 			std::unique_lock<mutex> 自动加解锁,也提供了unlock函数可以手动释放锁.
-		std::atomic原子模板类型
 		std::call_once只调用一次,用于实现单例.
 		std::condition_variable条件变量(注意须用mutex进行保护,详见APUE)
 		std::promise与std::future相当于golang中的channel的两端,用于传递数据或发送信号.
 			std::promise用于返回std::future对象及写入数据.
 			std::future用于阻塞等待接收对应std::promise写入的数据.
 		thread_local 修饰的变量类似于静态/全局变量,只不过该变量作用域为线程作用域,如果线程内有多个对象包含该变量则共享同一个.
-	8>.函数对象封装与参数绑定
+	8>.函数对象与参数绑定
 		std::function 可调用对象的包装器,可容纳除了类普通成员函数外的所有可能可调用的对象.用统一的方式处理函数/函数对象,以允许保存和延迟执行它们.
 		std::bind 绑定器可以全部绑定,部分绑定,全部不绑定参数,然后返回一个仿函数类型,返回值可以直接赋值给一个std::function
 	9>.chrono时间相关
