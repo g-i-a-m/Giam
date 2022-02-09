@@ -160,11 +160,36 @@
 	boost::lockfree::stack 适用于多生产者多消费者
 		行为特性与boost::lockfree::queue一致.
 
+五.容器
+	Boost.Bimap:双向查找容器,相当于内部包含了lest和right两个map类型的容器,key和value都可以进行搜索,弥补了std::map的不足.
+		由于双向映射性,key和value都必须是唯一的.
+		例子:
+			boost::bimap<std::string, int> animals;
+			animals.insert({"cat", 4});
+			animals.insert({"spider", 8});
+			std::cout << animals.left.count("cat") << '\n';
+			std::cout << animals.right.count(8) << '\n';
+	Boost.Array:数组,C++11中添加进标准库.
+		优点:
+			1>.提供了标准库容器的特性,比如迭代器,assign()范围替换函数等.
+			2>.有越界检查.
+			3>.方便使用标准库算法,比如排序等.
+	Boost.Intrusive:侵入式容器,在插入时没有内存分配;即使是像list<A*>这种还是会分配3个指针.
+		而boost::intrusive::list的元素类需要继承自boost::intrusive::list_base_hook,元素对象被侵入了辅助数据,所以交侵入式容器.
+		例子:
+			struct A : public boost::intrusive::list_base_hook<> {
+			  std::string name;
+			  int legs;
+			  A(std::string n, int l) : name{std::move(n)}, legs{l} {}
+			};
+			A a{"cat", 4};
+			boost::intrusive::list<A> list;
+			list.push_back(a);
+		优点:
+			没有元素的复制操作,存储的是原始对象,没有内存分配,效率高,也不会抛出异常.
 MPI库
 
 Coroutine库
-
-Lockfree库
 
 Uuid库
 
