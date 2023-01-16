@@ -175,7 +175,7 @@
 			2>.有越界检查.
 			3>.方便使用标准库算法,比如排序等.
 	Boost.Intrusive:侵入式容器,在插入时没有内存分配;即使是像list<A*>这种还是会分配3个指针.
-		而boost::intrusive::list的元素类需要继承自boost::intrusive::list_base_hook,元素对象被侵入了辅助数据,所以交侵入式容器.
+		而boost::intrusive::list的元素类需要继承自boost::intrusive::list_base_hook,元素对象被侵入了辅助数据,所以叫侵入式容器.
 		例子:
 			struct A : public boost::intrusive::list_base_hook<> {
 			  std::string name;
