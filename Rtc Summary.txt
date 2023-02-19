@@ -381,9 +381,6 @@ PacedSender:
 
 各算法参数调节及预期效果:
 https://blog.csdn.net/sonysuqin/article/details/107574325
-https://blog.csdn.net/sonysuqin/article/details/106186374
-https://blog.csdn.net/CrystalShaw/article/details/82981183
-https://blog.csdn.net/qq_16135205/article/details/88899515
 
 QoE与QoS:
 	QoE:牵扯了所有参与通信链的各个方面(用户,运营商,内容商,终端设备和软件服务);评价QoE的主体是终端用户,评价的对象主要是业务和支撑业务的网络.
