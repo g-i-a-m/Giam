@@ -83,7 +83,7 @@
 			作用: 配合shared_ptr解决循环引用的问题.有A,B两个类,A中有B的智能指针,B中有A的智能指针,如果都是shared_ptr则永远不会释放,需要其中一个类中使用另一个累的weak_ptr.
 		unique_ptr:与shared_ptr相对,独占指针对象,并保证指针所指对象生命周期与其一致.
 			作用:独占型智能指针,性能近似于裸指针,不用显式调用析构了.
-	7>.线程及线程同步
+	7>.线程及锁
 		std::thread
 			std::thread t(func, arg...);
 		std::mutex
