@@ -7,7 +7,7 @@
 			boost::asio::ip::tcp::acceptor 一个TCP监听socket,用于处理监听新的TCP连接.
 			boost::asio::ip::udp::socket 用于通过TCP网络接发数据.
 			boost::asio::deadline_timer 用于定时器功能.
-		●一般首先创建IO服务对象,然后根据IO服务创建IO对象,然后在一个线程中调用run()函数来启动asio并阻塞线程,之后对IO对象进行操作并异步地等待处理结果即可.
+		●一般首先创建IO服务,然后根据IO服务创建IO对象,然后在一个线程中调用run()函数来启动asio并阻塞线程,之后对IO对象进行操作并异步地等待处理结果即可.
 		●同一io_context对象的run()函数可在多个线程中调用,IO事件处理函数将在这些线程中的其中一个线程中进行调用.
 		●asio提供了boost::asio::io_context::strand类,用于在多线程场景下,使绑定到strand对象的异步事件串行处理以避免线程间的同步.strand示例:
 			boost::asio::io_context service_;

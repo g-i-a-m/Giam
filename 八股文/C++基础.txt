@@ -19,8 +19,6 @@
 			常量对象只能调用const成员函数,不能调用non-const成员函数.因为如果调用non-const成员函数时,隐式的this指针需要指向是const对象.
 			non-const对象可以调用const成员和non-const成员函数.
 			实在想在const成员函数中修改某个变量,可以使用mutable修饰这个变量.
-	●explicit关键字
-		修饰构造函数,防止发生自动调用构造函数进行类型转换.
 	●volatile关键字
 		volatile的特性:
 			指示编译不要对修饰的变量进行优化,每次读取都从内存中读而不是寄存器,但不具有原子性.
