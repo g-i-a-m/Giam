@@ -243,7 +243,7 @@
 		IP_RECVIF选项:获取网卡索引.
 		IP_RECVDSTADDR选项:获取接收数据报的目的地址.
 		IP_HDRINCL选项: 对原始套接字设置自己的IP首部.
-		IP_TOS选项: 设置tcp/udp/sctp套接字中ip首部的服务类型字段,以便获得网络服务供应商的特别照顾(e.g., 低延迟,高吞吐).
+		IP_TOS选项: 设置tcp/udp/sctp套接字中ip首部的服务类型字段,以便获得ISP网络服务供应商的特别照顾(e.g. 低延迟,高吞吐).
 		IPV6_PATHMTU选项: 用于获取路径MTU发现功能确定的当前MTU值.
 		IPV6_IPV6ONLY选项: 用于禁用掉双栈主机上IPv6监听套接字对IPv4客户端请求的支持(默认支持,内核会做映射).
 		有些套接字选项是监听套接字继承来的,须先给监听套接字设置这些选项:SO_DEBUG,SO_DONTROUTE,SO_KEEPLIVE,SO_LINGER,SO_OOBLINE,SO_RCVBUF,SO_SNDBUF,SO_RCVLOWAT,SO_SNDLOWAT,TCP_MAXSEG,TCP_NODELAY.
