@@ -1,0 +1,453 @@
+	/  video driver	audio driver
+	|		|			|
+	|	encode/decode(YUV/PCM) - - - - - - Congestion Controller
+	|		|			|							|
+	|	H264/VP8    G711/AAC/OPUS					|					SR,RR,SDES,BYE,APP,RTPFB,PSFB,XR
+	|		   \     /								|									|
+	|			 RTP - - - - - - - - - - - - - - - -┼- - - - - - - - - - - - - - - - - RTCP
+SDP<|			  |																		|
+	|			 SRTP																  SRTCP
+	|			  |_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _|
+	|												|
+	|											  DTLS
+	|												|
+	|--candidate								STUN/ICE
+	|												|
+	\										Transport Layer(UDP)
+													|
+											Network Layer(IPv4/6)
+													|
+											Data Link Layer(Ethernet Frame)
+													|
+											Physical Layer
+
+SLB:
+	1>.服务器收到对端sdp后把双方的sdp中的ice-ufrag和本地candidate中的ip,port信息传给代理模块,代理模块保存ice信息并广播给集群内所有Pod中的代理模块.
+	2>.服务器作为Lite端不需要产生candidate-pair主动进行连通性检查,因为就算产生了主动打洞也打不通.
+	3>.代理模块收到数据:
+		1>.是SLB健康检查包,应答即可.
+		2>.根据源IP端口查找对端本地地址端口映射关系,转发数据(转发到本地ICE模块或集群内其他媒体实例的ICE模块).
+		3>.未找到则对数据包进行解析,以建立转发映射关系(类似NAT路由表).
+			1>.不是stun协议的bind-request包则丢弃.
+			2>.是stun的bind-request包解出USER属性的值与ICE信息中ufrag比较,这里又分4种情况:
+				1>.在集群内其他实例广播的ICEINFO中找到,对当前数据包添加自定义包头后跟当前代理的地址信息字段,转发到目的实例的代理模块,并添加转发映射关系(目的实例ICE地址,客户端地址).在自定义包头中添加的本代理的IP和端口信息,是在目标Pod的媒体服务中的ICE模块解析并使用的,用于反向数据跳过对应代理模块直接发送到SLB落点的代理模块.
+				2>.(不带自定义包头)在本地ICEINFO中找到,说明是由SLB落点正确未经过重定向;则添加转发映射关系(本实例ICE地址,客户端地址),并立即转发数据包到本实例的ICE端口上.
+				3>.(带自定义包头)在本地ICEINFO中找到,说明是由SLB落点到其他Pod中的代理模块,然后重定向过来的数据包.则连同自定义包头的完整包转到本实例的ICE模块;ICE模块判断自定义包头,取出包头中的IP地址信息并替换数据包源IP地址,记录下来用于进行反向的数据传输(i.g. 反向应答型数据则可跳过自己所属代理模块,直接发送到落点的代理模块避免经过两层代理的转发)ICE模块跳过自己的代理模块直接转至SLB落点的代理模块上,然后由落点的代理模块,透过SLB传递给客户端).
+				4>.没找到则丢弃数据包然后返回(在candidate-pair连通性测试阶段也不应该有其他数据包).
+	4>.源地址目的地址转发映射关系通过数据报保活心跳的方式维护,每来一包数据更新一下时间,5秒内没有数据报到来则清除这条转发映射关系,如果有特殊情况比如客户端端口变更,后边通过stun的bind-request心跳包还可以加回来新的转发映射关系.
+	5>.本地ICE信息和集群内其他实例ICE信息的维护,每天凌晨3点清空一下(后半夜没课,也没有学生愿意后半夜上课,再就是本地ufrag+对端ufrag比较难重复的).
+		逻辑更严谨的清理方案:在服务端的每个流对象中保存这个本地和对端ufrag对,在清理流对象时触发代理模块中的ICE信息清理.
+
+ICE:
+	1>.候选地址搜集gather:
+		●设置本地sdp后会创建icegather及agent,进行3种candidate的搜集(还有一种被动产生).
+			通过枚举本地所有网卡并在指定端口范围内生成相应随机未被占用端口号,收集host类型candidate并产生相应conn对象;
+			通过配置的stun url,从stun服务器获取自己公网映射地址,产生srflx类型candidate和相应conn对象;
+			通过配置的turn url,向turn服务器请求分配relay地址, 产生relay类型candidate和相应conn对象;
+			在收到对端的bind-request请求后,在本地保存的对端发送过来的candidate集合中不存在此请求的源地址信息,则产生一个prflx类型的candidate并添加到对端candidate集合中(当做对端发送来的candidate一样).
+		●产生的candidate一方面回调到上层应用层以传递给对端,另一方面保存到agent的localCandidates中等待与对端candidate配对.
+	2>.候选地址类型:
+		●host类型:枚举本地所有网卡产生.
+		●srflx类型:STUN服务器返回(NAT映射公网地址)
+			客户端向stun服务器3478端口发送binding request,不含有任何stun属性; stun服务器应答binding success response并携带mapped-addr,XOR-mapped-addr(异或运算,不同为真),应答源地址origin-addr.
+		●relay类型:TURN服务器分配的中继地址,通过此地址为两端进行透传转发.
+			客户端发送Allocate Request UDP,服务端应答Allocate Error 401并携带NONCE和REALM.客户端再次求情Allocate Request UDP并携带NONCE和REALM以及turn服务器注册的用户名,服务器验证通过后应答Allocate success并携带分配的relay地址及保活时间.
+			对端拿到relay-candidate后,向turn服务器发送Create-Permission并携带对端relay地址和自己的用户名,请求绑定本端地址和对端的relay地址.turn服务器建立转发关系之后应答成功(需定期发送refresh lifetime保活).
+			之后即可通过send/data indication stun包,负载bind-request请求进行连通性检查;
+			通过send/data-indication进行连通性检查,成功之后再通过channel-bindchannel.由于indication消息有stun包头及多个stun属性对带宽资源有浪费.所以只有4字节包头的channeldata应运而生,前2字节为channel号,后2字节为荷载长度.
+			通过channeldata进行中继传输时需要创建channel:
+				客户端发起channel-bind request并携带channel number,要绑定的对端的relay addr,用于验证的用户名等信息,turn服务器应答channel-bind success标识通道号与对端relay地址绑定成功,之后即可通过channeldata包进行数据传输了.
+		●prflx类型:在收到的binding-request请求中,源地址不能匹配任何现存远端候选地址,则在本地生成一个prflx类型的candidate.
+			prflx产生的原因是本地所有remote candidate与binding-request源地址都不匹配,而造成这个的原因是对端NAT分配的出口地址.
+	3>.候选地址交换:
+		双方将收集到的candidate传递到对等方(可以单独发送,也可以加到SDP中一起发送).
+	4>.候选地址配对:
+		●按协议类型(TCP/UDP,而非candidate type,host类型可以和srflx配对的),把本地与对端相同协议类型的candidate一一配对加入checklist;
+		●收到bind-request包后,如果该包源地址不在remote candidate集合中,则产生一个prflx类型candidate,然后把该candidate添加到remote candidate集合里,产生相应的candidate-pair对并启动检查.
+		●本地每收集到一个candidate就与所有同协议类型的对端candidate组成一对,每收到一个对端的candidate就与本地所有同协议类型的candidate组成一对并添加到agent的checklist.
+	5>.连通性检查:
+		●Full模式:双方都要进行连通性检查(发送binding request并等待接收bind success);sdp中不含ice-lite属性则是full模式.
+		●Lite模式:Lite一端不用主动进行连通性检查且只搜集host类型的candidate(只需要response对端的bind-request请求),为部署在公网的端更容易的支持ICE.
+		●最多只有能一方处于Lite模式.
+		●对checklist中的candidate-pair对进行检查,Full模式的一方向对端发送bind-request然后对端应答bind-success; 而lite一端处理对端的连通性检查.
+		●当两端角色都为controlling或者controlled角色时,在连通性检查阶段会比较binding-request消息中的tie-breaker属性的值,值比较大的则被认为是controlling,同时回应487错误给对端要求切换角色.
+		●作为一种优化措施,一旦收到对端的检查消息,应答后就立即对该候选地址对进行一次连通性检查调度而不必等待本地调度策略.这样可加速找到合适candidate-pair,被称之为triggered check.
+		●对于使用相同协议,源于同一网卡的同类型candidate,具有相同的foundation属性;对于具有相同foundation的多个候选地址对,只会启动其中一个的连通性检查,而其他的则处于frozen状态,当连通性检测成功再激活一个其它具有相同foundation的候选地址对.这样就阻止了哪些表面上看起来很有吸引力实际上会失败的那些检查.
+		●自己的实际实现:不配置stun地址即只产生host类型的candidate,二是直接丢弃对端发过来的candidate即不产生candiate-pair也无法主动向对端检查连通性,但会等对端发过来bind-request时产生一个candidate-pair,然后服务端会对这个candidate-pair做服务端到客户端方向的连通性检查(和标准的ice-lite模式的区别也就在这).
+		●如果有丢包根据RTT进行判断和重传,直到30秒超时检查连通性失败;RTT默认值3秒,之后根据发送请求时间及接收到应答时间之差计算.
+	6>.提名candidate-pair选择传输通道:
+		●controlling角色:发起提名某一candidate-pair的一端.
+		●controlled角色:接受对端发起的提名请求的一端.
+		●连通判断条件:controlled一端收到对端的bind-request提名一个candidate-pair; controlling这端收到接受提名一端应答的bind-success.
+		●提名成功后把candidate-pair放到selected-pair用于收发数据,删除低于提名的candidate-pair及未开始检查的及检查失败的candidate-pair.
+		RFC5245对提名定义了两种模式:
+			常规模式:controlling端会让检测流程持续进行,直到每个流都存在至少一个有效的candidate pair,然后才选择一个candidate pair,再次发送stun请求并带上use-candidate属性进行提名.
+			激进模式:controlling端会在连通性检查的STUN请求中就直接设置提名标记,一旦连通性检查成功ICE流程就完成了.
+	7>.定时对selectedPair进行心跳检测,超过t1时间状态转变成disconnected,超过t2时间状态转变成failed并删除本地所有candidate-pair.
+		ICE Transport状态(对众多Candidate-pair连通性检查结果的汇总):
+			New:ICE模块刚创建还未开始连通性检查.
+			Checking:正处于连通性检查阶段,还未提名确认选中任何连接
+			Connected:已经有连接被选中提名,可传输数据,但还有其他candidate-pair正在检查,当前选中的提名可能被替换;包含有checking状态.
+			Completed:连通性检查全部完成且有已确定的连接用于传输数据.
+			Disconnected:当前选中的之前提名的通性检查成功的连接心跳超时;包含的有checking状态.
+			Failed:Disconnecteed状态后重连失败,即将移除所有本地和远端的candidate.
+			Closed:ICE模块被关闭释放.
+		单个Candidate-pair状态:
+			Waiting:连通性检查还未开始执行(Binding Request 还没发送).定时器会随时把Waiting状态的candidate-pair变为In progress(发送binding request),和In progress的还未转化到Failed的Candidate-pair重新请求.
+			In progress:当连通性检查发送了，但是相应检查的事务仍在执行中(Binding Request 已发送).
+			Successed:连通性检查执行完成且返回结果成功(Binding Request 已完成).
+			Failed:连通性检查执行完成且结果失败(Binding Request 已完成).
+			Frozen:Candidate-pair刚初始化完成就在这个状态,对于相同的Foundation的Candidate-pair会按照优先级依次选取一个Pair,Unfreeze并设置为Waiting状态,其他则保持Frozen.直到选取的Pair完成,才会继续Unfreeze另一个Pair.
+	8>.传输线路(candidate-pair)选择的策略:
+		golang/pion: 实现较为简单,连通性测试成功之后根据candidate-paire优先级进行选择.
+		native c++判断先后顺序如下:
+			candidate-pair写入状态及值:
+				STATE_WRITABLE:收到了binding-response
+				STATE_WRITE_UNRELIABLE:部分收到部分没收到response
+				STATE_INIT:初始化完成还没开始ping
+				STATE_TIMEOUT:已经开始ping但从未收到过response,处于检查失败状态且不在重试.
+			网络偏好(host>srflx>prflx>relay).
+			网络成本(network_cost是binding-request中一个属性,表示当前网络类型例如以太网,回环网,WIFI,1/2/3/4/5G蜂窝移动网;原理是根据网络设备名匹配特定关键字推定网络类型).
+			candidate-pair的优先级.
+			candidate-pair的generation之和(值越大越新,越好).
+			未被剪枝优先(被剪枝的candidate-pair的写入状态还会被直接置为STATE_TIMEOUT).
+			RTT较小者优先(初始默认值3秒,测量新的rtt后按一定权重迭代更新,且测量的rtt未去除对端处理耗时的影响).
+		写入状态和candidate-pair状态区别:写入状态控制着连通性检查的过程和结果,且表达的更多细节,比如STATE_WRITE_UNRELIABLE表示有一部分应答收到了一些没收到,但检查还在进行并未到达失败;而candidate-pair状态中要么Successed要么Failed.
+		candidate-pair优先级数值由3个因子决定,权重由高到低依次为:
+			type preference:是candidate类型,host > srflx > prflx > relay
+			local preference:在多网卡主机或双栈主机中表示IP地址的优选顺序,
+			component ID:就是本candidate中的component ID值. component ID用于标识本candidate是为rtp传输而生成还是为rtcp而生成,如果指定合并传输则component ID值只有一种.
+	9>.连通性检查及传输通道切换:
+		当收集到本地Candidate,收到Remote Candidate时会创建connection(candidate-pair),然后触发对所有当前candidate-pair进行排序和状态更新,其中会启动对candidate-pair的ping定时任务. 优先ping已选中的连接(也需满足发送间隔),然后才会对其他未选中连接一个个的ping连通性检查,检查时connection状态发生变化则触发connection排序和切换提名.
+	10>.ICE断线重连逻辑:
+		当15秒未收到应答则把connection可写状态置为超时,并把状态变化事件抛给上层,触发上层对所有connection更新状态和排序.
+		排序完成后返回一个最优connection,设置选中并进行提名.
+
+	11>.NAT四种类型:
+		●完全锥型:  只要是同一内网地址+端口都映射成一个出口地址;完全不受限,任何人任何地址来的数据都转发到内网.
+		●地址受限型:只要是同一内网地址+端口都映射成一个出口地址;发回的数据只要地址是一样的,端口一样不一样都无所谓都能转到内网.
+		●端口受限型:只要是同一内网地址+端口都映射成一个出口地址;发回的数据地址和端口都一样才能转到内网.
+		●对称型:	同一内网地址端口发往不同的目的地址时,NAT映射成不同的出口地址;而且只有对应目的地址发回的数据才能被转发到相应内网主机上,相当于是4元组绑定的.
+		其中`端口受限型与对称性`及`对称型与对称型`无法打洞成功.主要由于对称型发往不同目的地址出口地址变化且端口受限型远端端口不能变化.
+	12>.上述4种NAT类型并不能覆盖所有的NAT,NAT可以是以下2个维度的任意组合:
+		●准入规则:
+			A发往B的p1端口,B的p2端口发来的数据是否传给A.
+			A从未发送数据给B,B发来的数据是否传给A.
+		●映射出口规则:
+			本地IP_1+Port_1无论发往任何目的地址,出口IP端口不变.
+			本地IP_1+Port_1发往目的地址IP_s1+Port_s1,NAT映射一个出口地址来,当发往目的地址IP_s1+Port_s2时映射一个新的地址出来.
+
+DTLS:
+	1>.数据包安全传输协议,由Record layer协议和Handshake协议两层协议组成;提供UDP场景下的安全保障,作用和TLS一样防止消息被窃听/篡改/冒充等问题;DTLS与UDP的关系类似于TLS与TCP,且DTLS在版本上与TLS存在对应关系. 
+		●Handshake协议:使用非对称加密算法,完成Record layer协议使用的对称密钥的协商.
+		●Record layer协议:使用对称密钥对传输数据进行加密,并使用HMAC对数据进行完整性校验,实现数据的安全传输.
+	2>.DTLS角色分为client和server,在sdp中进行协商.
+		a=setup:active  作为客户端.
+		a=setup:passive 作为服务端.
+		a=setup:actpass 自己可以作为任意角色,由对端决定.
+	3>.DTLS握手流程:
+		●客户端发送ClientHello消息给Server端,告诉对方自己支持的TLS版本,加密套件(支持的非对称与对称加密算法),压缩算法(TLS1.3废弃),sessionID(重连时跳过繁杂握手流程,重用之前握手结果).
+		●服务端应答HelloVerifyRequest附带cookie(cookie用于客户端二次请求携带以证明客户端能收到cookie, 服务器校验防止伪造IP地址的DDos攻击).
+		●客户端再次发送ClientHello并带上服务端应答的cookie.
+		●服务端校验cookie通过则应答ServerHello(版本,选中的加密算法等),Certificate(服务端证书),ServerKeyExchange(服务器公钥),CertificateRequest(用来索要客户端证书),ServerHelloDone(Server hello 结束).
+		●客户端发送Certificate(客户端证书),ClientKeyExchange(客户端公钥),CertificateVerify(客户端签名),ChangeCipherSpec(通知服务端接下来开始加密传输),EncryptedHandsharkMessage(加密数据用于测试).
+		●服务端发送ChangeCipherSpec(通知客户端接下来开始加密传输),EncryptedHandshakeMessage(加密消息用于测试).
+		根据握手中的协商的加密套件计算出SRTP加密参数:master_key和master_salt.
+
+		客户端向服务端发送自己的TLS版本和加密套件.
+		服务端向客户端发送自己的证书和公钥及选择的加密算法.
+		客户端通过证书验证服务端身份,验证通过则把客户端证书及公钥发送给服务端,并告知开始使用对称秘钥加密通信.
+		服务端验证客户端的证书,通过则告知使用对称加密秘钥通信.
+		注意事项:
+			DTLS握手过程丢包,会在当前步骤启动定时器重发请求.
+			乱序处理是通过判断消息号,只处理当前步骤的消息.
+			两次client-hello作用是防止ddos攻击,伪造IP端口发上来的请求不会分配资源.
+	4>.ClientHello:携带DTLS版本,随机数,加密套件CipherSuite(支持的加密算法列表),压缩方法,随机数,SessionID(空)以及扩展字段.
+		ServerHello:用于确认客户端ClientHello中服务端选择的加密算法,TLS协议版本,压缩方式等;如果服务端同意重用上次的会话,则一个相同的SessionID,否则就填入一个全新的SessionID.
+		Certificate:负载客户端或服务端的自签名证书(依赖sdp中的fingerprint来校验证书的安全性).
+		ChangeCipherSpec:通知对端协商完成,进入加密传输阶段.
+	5>.为保证DTLS握手消息按序传输,每个handshake消息都包含序列号,接收方只处理属于当前步骤的消息,对提前到达的消息则进行缓存.
+	6>.DTLS分片:对握手消息实现分片以避免IP分片,消息都可能包含fragment的offset和长度,由接收端重新组装完整消息.
+	7>.DTLS定义了消息重复检测机制,由接收方维护一个bitmap用于记录一接收的数据包,用于检测重复数据包.
+	8>.会话恢复:DTLS握手中Server端会生成SessionID返回,客户端在下次连接时附带SessionID,若验证通过可直接沿用原有的会话数据,包括协商算法和密钥.
+	9>.DTLS与TLS的差异:
+		●TLS基于TCP,DTLS基于UDP必须自己提供传输保障机制.
+		●TLS在传输出错时会中断连接,而DTLS需兼容多种出错场景,出错时往往直接丢弃数据.
+		●DTLS不支持RC4流加密算法.
+
+SRTP/SRTCP:
+	1>.DTLS握手成功之后,通过协商的参数计算出SRTP对称加解密参数,通过这两个参数初始化srtp/srtcp模块,分别对rtp和rtcp的负载部分进行加解密,之后再抛给上层处理或传给下层发送.
+
+ULPFEC:
+	●ULPFEC由RFC5109定义, 以RED格式进一步封装在RTP中传输.FEC报文位于RTP数据报的负载部分,FEC的头部数据来源于RTP头部(经异或运算得到),就是它所保护的RTP.
+	●ULPFEC报文可采用两种方式发送:1>.独立RTP流发送. 2>.封装在RED报文中随源媒体数据发送(Webrtc采用这种方式).
+	●RED格式:分为两种Primary Data Block和Redundant Data Block.
+		Redundant Data Block:块的负载类型,时间戳偏移量,块长度等.
+		Primary Data Block:表示此Block是RED包中的最后一个块.
+		FEC报文构造后首先封装为RED格式,然后再封装为RTP包,RTP负载类型为RED.接收端判断RTP负载后解包得到原始RTP或FEC报文.
+	●前向纠错原理:
+		Data1和Data2同时发送到对端,在发送时对它们做异或操作(即Data1的最后一位0与Data2的最后一位0异或为0,Data1的倒数第二位1与Data2的倒数第二位1异或为0,依次类推),产生了冗余数据包R,同时将三个包传到另一端.传输过程中Data1丢失,通过Data2和冗余包R就可将Data1找回来.找回包的算法也是异或操作,即在接收端将Data2的每一位与冗余包中的相同位进行异或操作就算出了Data1.但对于同一fec编码组连丢两个包则无法通过FEC进行恢复.而且由于冗余包的存在对带宽也有一定的损耗.
+	●组包解包过程:采集编码完成后,对帧数据进行DTLS加密处理,加密处理完成后放进打包器进行打包(如果数据太长分片到多个rtp包的负载中),对分片后的rtp包进行fec编码.
+
+FlexFEC:
+	●双向冗余,不仅横向做了冗余且纵向也做了冗余编码,也就可以通过其他冗余编码组的数据包进行丢包的恢复.
+	●对于连续丢包可以通过NACK+FEC进行部分重传部分恢复的方式.
+
+RTP负载分片与组合包:
+	H264的分片与组合包:
+		在RTP负载部分,FU identifier和h264的NAL_unit header中的字段是一一对应的,webrtc中默认采用FU-A和STAP-A其中type值对应如下
+		NAL_UNIT:1-23 单独的H264帧
+		STAP-A:24 单一时间的组合包
+		STAP-B:25 单一时间的组合包
+		MTAP16:26 多个时间的组合包
+		MTAP24:27 多个时间的组合包
+		FU-A:28 分片的单元
+		FU-B:29 分片的单元
+		FU identifier前2位的值与H264 NAL_UNIT header值相同,第三个字段type用于区分rtp负载的H264数据还是分片或组合包数据.
+		FU-A header:
+			Start bit:标识是分片的第一包
+			End bit:标识是分片的最后一包
+			Forbidden bit:保留字段
+			Nal_u type: 所属帧类型(取值范围1~23)
+
+RTP:
+	V:RTP协议版本号,占2位,当前版本号为2.
+	P:填充标志,占1位,如果P=1,则在该报文的尾部填充一个或多个额外的八位组,它们不是有效载荷的一部分(用于满足固定块大小要求的加密算法).
+	X:扩展标志,占1位,如果X=1,则在RTP报头后跟RTP扩展报头.
+	CC:CSRC计数器,占4位,指示CSRC的个数.
+	M:标记,占1位,对不同负载类型有不同含义;对于视频标记一帧的结束,对于音频标记会话的开始.
+	负载类型:占7位,用于说明RTP报文中有效载荷的类型;在流媒体中用来区分音视频编码,如opus,vp8等的类型值.
+	序列号:RTP报文的序列号,占16位;当下层承载协议用UDP的时可以用来检查丢包,乱序重新排序.序列号的初始值是随机的,同时音频包和视频包的sequence是分别记数的.
+	时间戳(Timestamp):占32位,反映了该RTP报文的第一个八位组的采样时刻;接收者使用时间戳来计算延迟和延迟抖动,以及进行同步控制.
+	同步信源(SSRC):占32位,用于标识同步信源.该标识符是随机选择的，参加同一视频会议的两个同步信源不能有相同的SSRC.
+	特约信源(CSRC):每个CSRC标识符占32位,可以有0～15个.每个CSRC标识了包含在该RTP报文有效载荷中的所有特约信源.
+RTP扩展头:
+	mid:与Unified-plan SDP中‘a=mid’值相同,用于标识媒体流.
+	rtp-stream-id:simulcast联播流的id.
+	repaired-rtp-stream-id : simulcast联播流重传的id.
+	abs-send-time:RTP数据包在发送端的绝对发送时间(表示范围23.9999秒),用于GCC模块的REMB计算.
+	abs-capture-time:最初捕获数据包中的第一个音频或视频帧的ntp时间,用于音视频同步.
+	transport-wide-cc-01:传输层序列号,接收端基于此序列号和到达时间构造TransportCC报文,以周期性间隔发送这些rtcp反馈给发送端.
+	transport-wide-cc-02:与01有两个变化,一是仅在发送方请求时才发送反馈,因此扩展有两个可选字节表示请求rtcp反馈;二是发送方确定反馈包中是否应包含定时信息.
+	framemarking:标记packet的编码信息;由于SRTP导致负载部分被加密,传输链路中间的转发节点想知道编码类型做优化的话,通过此字段知道编码信息.
+	audio-level:音频音量.
+	video-orientation:视频的旋转,例如标识前置/后置摄像头,摄像机方向等.
+	toffset:传输时间偏移,为RTP Hrader中timestamp与实际发送时间的偏移.
+	inband-cn:舒适噪声
+	playout-delay:抖动缓冲区,本地时间外推和预测渲染时间(基于预测的解码和渲染时间)会影响帧在接收器处渲染之前的延迟,此扩展旨在向接收者提供发送者关于需要多快渲染帧的意图. 用于对延迟低容忍(以平滑为代价)
+	video-content-type:视频类型,默认值00, 01代表是屏幕共享.
+	video-timing:视频定时,用于视频计时的RTP标头扩展
+	color-space:色彩空间信息,是正确呈现高动态范围(HDR)视频流所需的
+
+RTCP:
+	SR(200):发送端报告;
+		●何时发送: 发送间隔时间是随机变化的,发送间隔(音频默认5秒,视频根据带宽的5%计算间隔并乘以系数)*[0.5~1.5];
+		●ntp时间戳,rtp时间戳,已发送总包数,已发送总字节数.
+		●作用:
+			统计包平均大小.
+			通过rtp时间戳和SR中的ntp时间戳做音视频同步.
+			发送端计算RTT步骤之一.
+	RR(201):接收端报告;
+		●何时发送: 发送间隔时间是随机变化的,发送间隔(音频默认5秒,视频根据带宽的5%计算间隔并乘以系数)*[0.5~1.5];
+		●RR发送间隔内丢包数及丢包率,已接收最大序列号(算上翻转一轮),延时抖动(rtp时间戳与接收时间之差的变化趋势),最近一个SR报告的时间戳,从收到SR报告的时间到发送该RR报文时刻的时间差值(可用于发送端计算RTT).
+		●作用:
+			基于丢包率的带宽估算.
+			网络抖动.
+			发送端计算RTT步骤之一.
+	SDES(202):源端描述;
+	BYE(203):离开会话;
+	APP(204):应用数据;
+	RTPFB(205):传输层反馈
+		FMT=1: NACK丢包反馈;
+			如何产生: 接收端按ssrc记录每包数据的到达情况,如果有乱序或真的丢包比如收到1,2,3,6则把4,5加入到nack_list,稍后若收到4,5包再从队列中移除,当nack请求次数超过10次也移出nack_list.
+			何时发送: 定时遍历每个nack_list中的包,根据RTT,最小间隔,最大间隔等条件;每次把包加入nack请求时更新发送时间为下次检查重传准备.
+			作用:请求重传数据包
+		FMT=3: TMMBR 临时最大媒体流比特率请求;
+		FMT=4: TMMBN 临时最大媒体流比特率通知;
+		FMT=15: TWCC 接收数据包的间隔时间增量反馈给发送端;
+			作用:用于发送端基于延迟的带宽估算算法.
+	PSFB(206):RTP负载相关反馈
+		FMT=1:PLI 视频帧丢失,请求重发关键帧;
+		FMT=2:SLI 分片丢失,请求重发关键帧;
+		FMT=3:RPSI 参考帧丢失,请求重传;
+		FMT=4:FIR 请求关键帧; 一般用于新的参与者加入,而PLI,SLI,RPSI一般用在丢包或解码错误时.
+		FMT=5:TSTR
+		FMT=6:TSTN
+		FMT=7:VBCM
+		FMT=15:REMB 接收端带宽估算反馈
+			作用:用于接收端基于延迟的带宽估算结果反馈给发送端进行码率控制.
+	XR(207):扩展报告
+		BT=3: 数据包接收时间报告块.
+		BT=4:DLSR 接收端参考时间报告块,用于非发送端也可以报告时间戳.
+		BT=5:DLRR 应答DLSR以来的延迟;以1/65536秒为单位.
+			作用:用于接收端的RTT计算.
+
+拥塞控制算法(Google Congestion Control,简称GCC)通过估算可用带宽来动态调整发送端码率. 从基于丢包,基于延迟两个方面进行可用带宽估算.
+	由于NACK,FEC等策略来解决丢包问题,实际上发送端的带宽估算对小程度的丢包来说并不太敏感,对延迟的抖动有较大的灵敏度.
+	发送端RTT计算:
+		通过SR与RR包计算,rtt=(rr_recv_t-rr_send_t)-(rr_send_t-sr_recv_t)
+		也就是: 传输占用时间=整个过程总时间-接收端处理时间
+	接收端RTT计算:
+		通过RTCP XR(207)的DLSR和DLRR报告块计算;DLSR中携带发送时的NTP时间戳,对端应答DLRR并带上收到DLSR的时间和发送DLRR的延迟.
+	此处的rtt会同时作用于delay_based_bew和SendSideBWE两个模块.
+
+	基于延迟的拥塞控制:
+		当网络发生拥塞后数据包会进行缓冲从而造成延时,而当缓冲溢出时就会出现丢包.有两种:早期的REMB,后期的Transport-CC.
+	REMB:
+		●开启abs-send-time RTP头部扩展;启用rtcp-fb中的goog-remb选项.
+		●接收端记录每包数据到达时间并解析rtp扩展头的abs-send-time扩展属性,占用3字节表示数据包发送的相对时间(前6位表示秒数,后18位全为1表示1秒,总共能表示64秒),然后在接收端分别经过到达时间滤波器,过载估计器,过载探测器,码率调节器
+		●REMB带宽估计按单个流计算的,音频与视频分别计算各自的,如果有多个视频也是分别单独计算的; 而Transport-cc是对整个传输通道做的估算.
+		到达时间滤波器:
+			两个相邻数据包之间所用传输时间的差异为拥塞值,依据RTP扩展头中的abs-send-time与接收时间,根据公式:
+			delta = t2 - t1 = (tr2-ts2)-(tr1-ts1) = (tr2-tr1)-(ts2-ts1) = r_delta - s_delta
+				得出两个数据包的传输时间之差等于两个数据包的发送时间之差与接收时间之差的差;既避免了时间不同步问题又避免了PacerSender模块的分段间歇性发送的影响.
+		过载估计器(卡尔曼滤波):卡尔曼滤波方程,得到延迟变化偏移量.
+		过载探测器:根据延迟变化偏移量和动态阈值判断网络是否过载(overuse)normal,underuse.
+		码率调节器:
+			如果处于过载状态,增加码率的方式分两种情况:一是会话刚开始时慢启动,进行倍数增加,当前码率乘以系数1.08;二是增加的码率值是当前码率在一个RTT时间周期内所能传输的数据速率.
+			如果处于Decrease状态,递减原则是:过去500ms时间窗口内的最大acked biterate乘以系数0.85,acked biterate通过feedback反馈过来的报文序号查找本地发送列表就可以得到.
+		●Kalman滤波器的总体思路是,用k-1时刻的估计值X^去预测k时刻的Z,然后用预测的值和实际观测到的值进行比对,用误差修正k+1时刻的估计方法.
+
+	Transport-CC:
+		●开启TransportSequenceNumber RTP头部扩展;启用rtcp-fb中的transport-cc选项.
+		●rtp-fb twcc的产生:
+			收集每个数据包的收到和延迟情况,ssrc,第一包扩展头中的序列号(作为基础序号),本次反馈的总包数,绝对时间(基准),packetchunk(是否收到的状态,0未收到,1收到且间隔小,2收到但间隔长),recv delta(表示前边chunk中已收到的rtp包接收时间间隔,注意单位是250us),
+			RemoteEstimatorProxy作为Sendside-BWE在接收端的代理,在Process线程以100ms为周期发送Transport-cc报文,根据码率动态调整发送周期[50ms,250ms之间],本身可用码率为当前码率的5%动态调整发送间隔.
+		发送端收到transport-cc feedback后在delay_based_bwe.cc进行处理:
+			根据每组包的到达时间的延迟差(delta delay)的增长趋势判断网络是否过载,如果过载下调目标码率,如果处于平衡范围维持当前码率,如果是网络承载不饱满进行码率上调.
+			主要由到达时间滤波器(InterArrival),趋势线滤波器(TrendlineEstimator),码率调节(AimdRateControl)这3个模块完成.
+
+		到达时间滤波器:
+			两个相邻数据包之间所用传输时间的差异为拥塞值,delta = t2 - t1 = (tr2-ts2)-(tr1-ts1) = (tr2-tr1)-(ts2-ts1) = r_delta - s_delta得出结论,两个数据包的传输时间之差等于两个数据包的发送时间之差与接收时间之差的差;碰巧rtp-fb twcc中的delay delta中返回的值就是接收时间之差,真巧啊;而且既避免了时间不同步问题又避免了PacerSender模块的分段间歇性发送的影响.
+		趋势线估计器:
+			时延变化趋势拟合直线斜率;最小二乘线性回归,得到延迟变化斜率.
+			根据延迟变化斜率和动态阈值判断网络是否overuse,normal,underuse.
+			Transport-cc中的趋势线估计器实现了remb中的过载估计器和过载探测器的功能.
+		码率调节器:
+			如果处于过载状态,增加码率的方式分两种情况:一是会话刚开始时慢启动,进行倍数增加,当前码率乘以系数1.08;二是增加的码率值是当前码率在一个RTT时间周期内所能传输的数据速率.
+			如果处于Decrease状态,递减原则是:过去500ms时间窗口内的最大acked biterate乘以系数0.85,acked biterate通过feedback反馈过来的报文序号查找本地发送列表就可以得到.
+	最小二乘回归直线与Kalman滤波特点:
+		已有观测样本且状态量不会变化,最小二乘法;观测样本实时生成且状态量不会变化,递推最小二乘法;观测样本实时生成但状态量时变,Kalman算法.
+	REMB与Transport CC区别:
+		1>.REMB算法集中在接收端,计算压力在服务端;TWCC算法在发送端,计算压力在客户端.
+		2>.REMB是对单个媒体流的带宽估计针,TWCC是对整个传输通道的带宽估计.
+		3>.REMB的过载检测器基于卡尔曼滤波的结果,TWCC的过载检测基于最小二乘线性拟合的斜率.
+		4>.TWCC比REMB网络恢复快,网络波动大时带宽阈值波动小;
+		5>.REMB很久没更新了,TWCC一直在更新改进.
+	基于丢包的拥塞控制:
+		●接收端处理每个RTP包,更新收到的最大RTP包序列号,如果序列号有跳跃,则累计丢包数加上序列号与最大序列号的差值,并更新最大序列号.
+			乱序包的处理:
+				如果收到的包序列号比最大包序列号小(乱序),由于之前突然变大已经累加了丢包数,所以把累积丢包数减一进行恢复;
+				如果收到的包序列号比最大包序列号大2及以上,则累积丢包数加上与最大包序列号的差值-1,后续如果收到乱序小序列号的包会进行减1修正回来;
+			重传包的处理:
+				如果启用了RTX,重传RTP包时将采用不同的ssrc进行传输,无需也不会对累积丢包数进行修正.
+				如果未启用RTX而对端进行了一到多次重传,因为无法判断是乱序还是丢包重传,会进行错误的修正,累计丢包数就不正确了.
+			序列号走完一轮之后:
+				当前数据包与收到的最大序列号的绝对值超过阈值(默认50,可设),对累计丢包预处理加1,后边的包如果是顺序的则重置当前最大序列号.
+		●接收端通过两个时刻的最大序号之差得到两个时刻之间的期望包数,统计两个时刻间的实际接收到的总包数,累积丢包数,丢包率,然后将丢包率,累计丢包,收到的最大序列号等字段填到RR包的Report Block中发送给发送端.
+		●RR的触发条件:使用定时器,间隔时间是随机变化的,发送间隔(音频默认5秒,视频根据带宽的5%计算间隔并乘以系数)*[0.5~1.5];
+		●发送端收到RTCP RR报文并解析得到丢包和延迟.
+			在未启用丢包估算模块时的估算码率值逻辑:
+				当丢包率小于2%时,说明网络状况良好,把当前码率增大8%+1kbps;
+				当丢包率介于2%与10%之间时,丢包估算的码率值保持不变.
+				当丢包率大于10%时,说明网络发生拥塞,把`当前码率`降低`丢包率的50%`(i.e. 丢包率为12%时, 当前码率就降低6%作为基于丢包估算出的码率);
+	如何确定最终码率:
+		综合基于丢包的带宽估算结果,REMB反馈的带宽估算结果,TWCC带宽估算结果,这些都将作为参数在SendSideBwe模块进行综合评估,评估逻辑为:
+		当未收到RR反馈或累计总包数不够,未产生丢包率时则使用REMB结果或TWCC延迟估计结果或者默认码率作为目标码率,并传入基于丢包的带宽估算模块作为计算的基础码率.之后通过SR,RR计算出了RTT也传入基于丢包的拥塞控制模块. 然后取TWCC,REMB,LOSS_BASED,最大带宽限制这4个值中的最小值,且不能小于最小带宽限制.
+
+丢包重传:
+	RFC4585协议中定义可重传未达数据的方式有二种:传输层的NACK和编码层的PLI/FIR关键帧重传.
+	NACK重传:
+		●在SDP编码描述中添加rtcp-fb:nack以开启传输层的丢失重传.
+		●接收端按ssrc记录每包数据的到达情况,如果有乱序比如收到1,2,3,6则把4,5加入到nack_list,稍后若收到4,5包再从队列中移除,当nack请求次数超过10次也移出nack_list.
+		●如果nack_list长度超过1000则删除最新的KeyFrame之前的nacked序列号,如果还满则清空nack_list并请求关键帧.
+		●构建NACK报文时,遍历每个nack_list中的包,根据RTT计算出重传的间隔时间,最大间隔等条件;每次重试对应包的重传请求时更新发送时间,为下次再请求做准备.
+		●发送NACK报文到发送端后,发送端根据NACK报文中的序列号,在发送缓冲区找到对应的数据包则进行重传.
+		RTX负载类型:在基于丢包的带宽估算算法中,使用RTX进行丢包重传,来避免丢包率出现负值.
+	PSFB的负载重传,可分为3类:
+		PLI 视频帧丢失,需要发送新的关键帧.
+			在SDP编码信息中添加rtcp-fb:nack pli以开启pli.
+		SLI 分片丢失重转.
+		FIR 请求生成关键帧; fir请求的接收者有判断处理过于频繁的fir请求的过滤.
+			在SDP编码信息中添加rtcp-fb:ccm fir以开启fir.
+
+PacedSender:
+	为避免数据包瞬间大量发送到网络(i.e.产生关键帧及后续帧时)造成延迟抖动及网络拥塞,PacedSender的作用就是根据带宽估计模块计算的发送码率将数据发送均匀的分布各个时间片中平滑发送.
+	打包好的RTP音视频数据包存入待发送的队列中,然后把RTP序列号及包长度通知PacedSender平滑发送模块缓存队列保存起来,然后根据动态间隔时间和当前估算出的发送码率计算出本次发送间隔内可以发送的数据长度,回调通知上层发送指定序列号的包,直至本次可发送数据长度消耗殆尽.
+	动态模式: ???
+	固定周期模式:每5ms触发一次计算可发送数据长度和发送通知.
+	Padding包作用: 保持恒定的比特率来缓解,需要花费一些时间来适应流量变化的网络(特别是移动网络)的问题.
+
+各算法参数调节及预期效果:
+https://blog.csdn.net/sonysuqin/article/details/107574325
+
+QoE与QoS:
+	QoE:牵扯了所有参与通信链的各个方面(用户,运营商,内容商,终端设备和软件服务);评价QoE的主体是终端用户,评价的对象主要是业务和支撑业务的网络.
+	QoS机制:是从网络的角度对提供的业务进行差异性服务,网络实体根据不同的质量需求来处理不同业务,为了保证或增加QoE而应用在网络上的技术机制.对不同的业务需要不同的QoS机制,有些业务对丢包敏感(e.g. 文件传输,浏览网页),有些业务对延迟敏感(实时通讯,互动直播).如果业务不能保证一定的QoE,就会造成用户流失.
+	WebRTC的Qos机制:
+		带宽估算控制发送码率.
+			基于延迟
+				REMB
+				Transport CC
+			基于丢包
+				通过RTX与RR报告的Loss-Based
+		重传(传输层重传NACK,编码层重传FIR/PLI).
+		ulpFEC/flexFEC前向纠错.
+		opus编解码器带内FEC,但带内FEC中音频包的冗余信息用的是低码率编码,所以还原后的音质会降低.
+		PacedSender平滑发送.
+		JitterBuffer抖动缓冲器.
+	只针对接收端的QoS机制:
+		DTX非连续传输,opus编码器在安静环境时自动降低编码码率(可变码率).
+		PLC丢包隐藏,在opus解码端通过前后音频数据包的相关性来预测当前丢失的音频数据包,对丢失的音频数据包进行补偿,隐藏当前的丢包错误.
+		SVC可伸缩视频编码.
+			对比AV1视频流只增加10%~15%左右冗余码率,但对编解码器有要求.
+		Simulcast联播(同源多流).
+			推流端带宽占用比SVC多,相应对网络要求比SVC方案要高,但对编解码器无需额外要求.
+	Qos优化:
+		1>.
+
+Multi-unicast: 多单播
+	业务层做多推流和拉流选择.
+Simulcast: 推流端同时发送多个流(同一源的不同质量),从而允许拉流端在SFU帮助下,根据自身带宽能力或应用程序拉取其中某个流.
+	浏览器实现联播时有三种不同的风格:
+		SDP改造(Chrome,Safari):
+			生成的本地SDP中再添加两组ssrc(一个正常传输另一个用于rtx重传),并再添加一行a=ssrc-group:SIM ... 把3组ssrc绑定在一起.
+		基于早期draft-ietf-mmusic-sdp-simulcast草案RID(Firefox):
+			为sender设置3组编码参数,包括[rid,最大码率,分辨率],生成的本地sdp中有ssrc和rtp扩展rtp-stream-id.
+		基于RFC8853/8851的RID联播(2021-01):
+			在addTransceiver时指定编码参数,包括[rid,负载类型,码率,帧率,最大宽高...],生成的本地sdp中没有ssrc但带有rtp扩展rtp-stream-id.
+			联播子流的限制可直接在rid描述指定,也可通过在rid描述行中指定pt, 然后在对应pt的a=imageattr 和 a=fmtp属性中进行限制.
+			同一媒体描述(m=)下可以指示多个联播,联播流之间用`;`分割,联播子流间内用`,`分割.例如a=simulcast:send 1;2,3 recv 4
+SVC: 可伸缩视频编码,SFU从推流中剥离层以使输出流符合拉流用户的网络状况和UI期望.SVC对计算资源和网络资源的占用方面比Simulcast有更好的性能.
+	提供时域(帧率),空域(分辨率),质量3个维度的分层:
+		时域:当有多个时域编码层,较高层依赖较低层才能被解码,但低层不需要任何较高层.当接收端需要降低码率时,可移除高层图片以降低码率和帧率而不影响剩余编码层的可解码性.
+		空域:在编码时即产生多重分辨率的结果,使得低层(低分辨率)图片携带有高层(高分辨率)图片一部分特征,高层无需再存储这些重复的部分,当接收端需要低码率/低分辨率时只需丢弃高层级数据进行转发.
+		质量:在编码时产生多重品质结果,较高品质的结果在存储上不需要重复记录重复的信息.当接收端需要降低码率时,可移除高质量层只转发低质量的编码层数据.
+	SVC和AVC的根本区别:
+		SVC将视频信号编码为一组图层.特定层及其所依赖的层提供了以特定的保真度解码视频信号时所必需的信息.这里的保真度涉及空间分辨率,时间分辨率或信噪比(SNR 压缩视频信号相对于其未压缩版本的失真度量).不依赖于任何其他层的最底层被称为基本层,并提供最低质量等级的图像.每个附加层可以通过三个维度(空间/时间/SNR)中任何一个维度提高信号质量.
+ABR: 自适应带宽比特率,指SFU端做转码适应不同拉流端;而已存在的类似方式通过REMB/TWCC/LOSS_BWE等方式调整编码输出码率会对所有拉流端造成影响.
+
+音视频同步:
+	不同步原因:音频与视频采集时间的时间戳(也就是RTP包头中的timestamp)的起点都是各自随机生成的,而他们开始采集的时间点由于硬件或软件等人为因素可能不同.
+	利用音视频流各自的SR报告中的NTP时间戳与RTP时间戳,这两个时间戳表示同一时刻的不同格式,然后SR报告中的RTP timestamp与负载媒体数据的RTP头中的timestamp基于同一时间轴(有着相同的时间单位和起始偏移),因此通过RTP包头中的timestamp与SR报告中的RTP timestamp的差值利用时基可计算出毫秒数,然后通过SR中的NTP时间戳与计算出的毫秒数即可得到RTP包负载数据的绝对采集时间;分别计算出音视频的绝对时间即可进行同步.
+
+如何识别rtp和rtcp包:
+	`RTCP包头的PT字段(8bit)`与`RTP包头的Mark位(1bit)和PT位(7bit)`都处于UDP负载中的第二字节;由于RTP头mark位的存在,故采用rtcp payload Type的取值范围进行判断.
+	rtp pt(7bit)取值范围:0~127, 如果算上mark位可为0可为1,则最大是255; rtcp pt取值范围:194~207
+
+Plan-B 与 Unifield-Plan:是用SDP描述传输多路媒体流时的两种格式或标准.
+	配置方式:new RTCPeerConnection({sdpSemantics:'unified-plan'});// or replaced by 'plan-b'
+	区别:
+		Plan-b中只有一个m=audio用于音频,且只有一个m=video用于视频; 当有多个音频或视频流时通过在同一'm='下列出a=ssrc及a=msid进行区分.
+		Unifield-Plan中,当有多个音频或视频流时, 每个流都对应一个'm='行.
+
+保障数据的实时性:
+	一种是选择最佳的传输路径,使得端到端传输时采取最好最短的传输路径从而保障数据传输的实时性(也就是candidate3种类型的优先级,host最优先).
+
+造成丢包,延迟,抖动的原因:
+	1>.移动网络基站信号弱或电磁干扰.
+	2>.网络路径中某节点数据缓存满,主动丢弃.
+JitterBuffer用于处理视频包,NetEQ用于处理音频包.原理大致相同(NetEQ更为复杂一些),都是通过一个队列(缓存区)对收到的数据做缓冲,然后再从队列的另一端将数据包一个个均匀的取出.
+
+弱网环境下无法使用TCP:
+	TCP的机制是发送,确认,丢包,重传. 服务端发送一包数据后,需要客户端的接收确认,如果发生丢包进行重传,由于滑动窗口的缘故会阻塞后续的传输,多发生几次丢包重传的话会导致非常大的延迟.

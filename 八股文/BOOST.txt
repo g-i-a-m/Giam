@@ -1,0 +1,200 @@
+一.Asio
+	Asio即异步IO,可以平台无关性地异步处理数据,而不需阻塞等待处理结果.
+	1>.Asio实现异步基于两个概念:IO服务和IO对象.IO服务抽象操作系统的接口,是进行异步的核心,而IO对象则用于初始化特定的IO操作.
+		●boost::asio::io_context作为IO服务,而IO对象有:
+			boost::asio::ip::tcp::socket 用于通过TCP网络接发数据.
+			boost::asio::ip::tcp::endpoint 用于描述一个socket的ip和端口,初始化acceptorIO对象.
+			boost::asio::ip::tcp::acceptor 一个TCP监听socket,用于处理监听新的TCP连接.
+			boost::asio::ip::udp::socket 用于通过TCP网络接发数据.
+			boost::asio::deadline_timer 用于定时器功能.
+		●一般首先创建IO服务,然后根据IO服务创建IO对象,然后在一个线程中调用run()函数来启动asio并阻塞线程,之后对IO对象进行操作并异步地等待处理结果即可.
+		●同一io_context对象的run()函数可在多个线程中调用,IO事件处理函数将在这些线程中的其中一个线程中进行调用.
+		●asio提供了boost::asio::io_context::strand类,用于在多线程场景下,使绑定到strand对象的异步事件串行处理以避免线程间的同步.strand示例:
+			boost::asio::io_context service_;
+			boost::asio::strand strand_(service_);
+			boost::asio::deadline_timer timer_(service_,boost::posix_time::seconds(5));
+			//定时器绑定到strand任务串
+			timer_.async_wait(strand_.wrap(boost::bind(&memberfunc,this)));
+			strand_.post(boost::bind(&func, this));//投递一个任务到任务串strand_
+	2>.io.run()在处理完所有异步消息后会判断outstanding_work_的值,为0则从run()函数返回导致IO线程退出无法继续处理后续的IO事件回调.
+		●通过构造对应io_context对象的boost::asio::io_context::work对象,使对应io_context对象的outstanding_work_值+1,从而继续阻塞在io.run()中等待处理消息,防止IO线程退出.
+		●在不析构work对象时调用io_context对象的stop成员函数,会使io_context.run()立刻退出,并丢弃所有未完成的消息.
+		●通过io_context::work防止IO线程退出的示例:
+			boost::asio::io_context io_context;
+			boost::asio::io_context::work work(io_context);
+			Thread() {
+				io_context.run();
+			}
+	3>.io_context成员函数
+		run()以阻塞的方式启动事件循环
+		poll()以非阻塞方式启动事件循环
+		post()委托一个任务给asio就立即返回.
+		dispatch()委托一个任务给asio立即处理.
+	4>.asio与协程
+		●boost::asio::coroutine可以作为基类或数据成员
+		●#include <boost/asio/yield.hpp>头文件中定义三个宏:
+			reenter:用于定义协程的主体
+			yield:通常与异步操作一起使用,也可以是符合语句块,也可以单独使用,定义挂起点.
+			fork:
+			BOOST_ASIO_CORO_REENTER 代替 reenter
+			BOOST_ASIO_CORO_YIELD 代替 yield
+			BOOST_ASIO_CORO_FORK 代替 fork
+		●实例:
+			class myclass : public boost::asio::coroutine {
+			  ...
+			  void operator()() {
+			    reenter (this) for (;;) {
+			      yield socket_->async_read_some(buffer(*buffer_), *this);
+			      // 或者
+			      yield
+			      {
+			        mutable_buffers_1 b = buffer(*buffer_);
+			        socket_->async_read_some(b, *this);
+			      }
+			      // 或者
+			      yield;
+			    }
+			  }
+			}
+	5>.扩展Asio:
+		Boost Asio主要支持网络功能,可以通过继承boost::asio::basic_io_object基类,实现自己的IO对象.
+
+二.内存池:
+	1>.内存池特点:
+		降低动态申请内存的次数因为一次分配多个块备用,减少用户态内核态的切换提升系统性能,减少内存碎片.
+	2>.pool:基本的定长内存池.
+		特点:提供基本的申请释放功能.
+		示例:
+			//模板参数boost::default_user_allocator_malloc_free可以像此处一样省略
+			boost::pool<> pool_(sizeof(A));
+			A* obj=(A *)pool_.malloc();
+			pool_.free(obj);
+	3>.object_pool:对象内存池
+		特点:对申请的对象内存调用构造和析构函数,对内存进行初始化和销毁,并且当释放内存时需要把当前块插入到空闲链表正确的位置,效率较低.
+		示例:类似pool
+	4>.singleton_pool:单例内存池,多线程安全的pool.
+		特点:
+			线程安全的,全是静态成员函数,自动释放所占用的内存需手动调用接口进行释放内存给操作系统.
+		示例:
+			struct singleton_pool_tag{};
+			//模板参数有5个,后3个模板默认参数为:分配器,锁,内存不足时申请的block的数量32
+			typedef boost::singleton_pool<singleton_pool_tag,sizeof(A)>  global;
+			A* df=(A*)global::malloc();
+			global::free(df);
+	5>.pool_allocator/fast_pool_allocator
+		特点:
+			用于替代STL容器的默认分配器.std::list与std::vector的都有默认的分配器模板参数,可以不适用默认而改为pool_allocator/fast_pool_allocator在内存池中分配内存.
+		示例:
+			std::vector<int, boost::pool_allocator<int>> v;
+			for (int i = 0; i < 1000; ++i)
+				v.push_back(i);
+			std::list<int, boost::fast_pool_allocator<int>> l;
+			for (int i = 0; i < 1000; ++i)
+				l.push_back(i);
+	6>.内存池实现原理:
+		申请一批内存块,把内存块加到空闲链表中,每次申请内存时从空闲链表查找一个空闲块返回给用户,如果空闲链表为空则再申请一批内存块并加到空闲链表再继续申请操作,如果系统内存已满则抛出异常或返回NULL.释放内存时,把对应内存块加回空闲链表.
+	7>内存池接口
+		malloc():申请一个内存块.
+		free():释放一个内存块给内存池的空闲链表.
+		ordered_new():申请连续分配多个内存块,用于数组的申请内存.
+		ordered_free():释放连续的多个内存块.
+		release_memory():释放所有未使用的内存块(在空闲链表中的内存块)给操作系统.
+		purge_memory():释放所有内存块给操作系统,包括正在使用的内存块.
+	8>.与智能指针配合实现自动释放
+		A* df=(A*)global::malloc();
+		std::shared_ptr<A> sptr(df, [](A* p){
+			global::free(p);
+		});//把自定义释放函数传递智能指针,在智能指针释放时调用从而自动归还内存给内存池.
+	9>.定长内存池的缺陷:
+		●对于小块内存的使用也占用一个block,有一定的内存浪费.
+			解决方式:把申请内存的请求划分为几类,然后对应到不同块大小的内存池上进行分配.在单例内存池singleton_pool进行初始化时通过第一个参数传递不同的tag类来实例化不同的单例内存池.
+		●内存回收不到系统,导致系统占用内存大小一直处于峰值.
+			解决方式:修改内存池分配和"回收"机制,尽量优先分配内存地址靠前的可用内存块,然后定期释放内存块.
+
+三.Interprocess库:进程间通信
+	共享内存:
+		tips:和XSI共享内存一样,不显式释放或进程异常退出将造成内存泄漏.
+		shared_memory_object shdmem{open_or_create, "Boost", read_write};//创建共享存储
+		shdmem.truncate(1024);//指定共享内存大小为1024(默认大小为0).
+		mapped_region region{shdmem, read_write};//通过持有共享内存的对象,把共享内存映射到进程地址空间.
+		int *val = static_cast<int*>(region.get_address());//取出共享内存起始地址,并强制类型转换成int指针.
+		*val = 99;//把数值99赋值到共享内存的起始4字节.
+		shared_memory_object::remove("Boost");//通过静态函数删除共享内存.
+		或者通过 boost::interprocess::remove_shared_memory_on_destroy共享内存自动销毁器来删除共享内存
+	托管共享内存:
+		managed_shared_memory managed_shm{open_or_create, "Boost", 1024};
+		int *i1 = managed_shm.find_or_construct<int>("int_1")(97);//在共享内存中创建对象并初始化
+		std::pair<int*, std::size_t> p = managed_shm.find<int>("int_1");//根据对象名字查找共享内存中的对象
+		std::cout << *p.first << '\n';
+		managed_shm.destroy<int>("int_1");//根据对象名字从共享内存中删除对象
+	同步:
+		命名互斥锁:由操作系统创建,根据名字查找/引用.
+			named_mutex named_mtx{open_or_create, "mtx"};
+			named_mtx.lock();/try_lock()/timed_lock()
+		匿名互斥锁:须在共享内存中创建
+			managed_shared_memory managed_shm{open_or_create, "shm", 1024};
+			interprocess_mutex *mtx = managed_shm.find_or_construct<interprocess_mutex>("mtx")();
+			mtx->lock();/try_lock()/timed_lock()
+		命名条件变量:与普通条件变量类似,需搭配互斥锁
+			named_mutex named_mtx{open_or_create, "mtx"};
+			named_condition named_cnd{open_or_create, "cnd"};
+			scoped_lock<named_mutex> lock{named_mtx};
+			named_cnd.notify_all();
+			named_cnd.wait(lock);
+		匿名条件变量:与命名条件变量类似,只是条件变量和互斥锁需在共享内存中创建.
+
+四.lockfree:无锁容器
+	无锁数据结构依赖于原子操作,同步在用户空间完成,所以不容易出现优先级翻转.
+	boost::lockfree::queue 适用于多生产者多消费者
+		默认为可变缓冲区长度,如果添加到队列的数据超过队列长度则动态分配额外内存,内部是有锁的因为在动态分配额外内存时需要加锁.
+		采用固定长度的队列由于禁用了动态内存分配,确保了无锁行为.
+		queue<int, fixed_sized<true>> queue_{10000};//固定长度为10000
+		queue_.push(i);
+		queue_.pop();
+	boost::lockfree::spsc_queue 适用于单一生产者/单一消费者,对此做了优化
+		队列缓存采用循环缓冲区实现,队列长度可通过构造函数参数或模板参数指定.
+		spsc_queue<int, boost::lockfree::capacity<100>> queue_;//或者boost::lockfree::spsc_queue<int> queue_{100};指定队列缓冲区长度为100.
+		queue_.push(i);//线程1存放数据
+		queue_.pop();//线程2中取数据而不用加锁.
+		queue_.consume_one([](int i){ sum += i; });//线程2中取数据而不用加锁.
+	boost::lockfree::stack 适用于多生产者多消费者
+		行为特性与boost::lockfree::queue一致.
+
+五.容器
+	Boost.Bimap:双向查找容器,相当于内部包含了lest和right两个map类型的容器,key和value都可以进行搜索,弥补了std::map的不足.
+		由于双向映射性,key和value都必须是唯一的.
+		例子:
+			boost::bimap<std::string, int> animals;
+			animals.insert({"cat", 4});
+			animals.insert({"spider", 8});
+			std::cout << animals.left.count("cat") << '\n';
+			std::cout << animals.right.count(8) << '\n';
+	Boost.Array:数组,C++11中添加进标准库.
+		优点:
+			1>.提供了标准库容器的特性,比如迭代器,assign()范围替换函数等.
+			2>.有越界检查.
+			3>.方便使用标准库算法,比如排序等.
+	Boost.Intrusive:侵入式容器,在插入时没有内存分配;即使是像list<A*>这种还是会分配3个指针.
+		而boost::intrusive::list的元素类需要继承自boost::intrusive::list_base_hook,元素对象被侵入了辅助数据,所以叫侵入式容器.
+		例子:
+			struct A : public boost::intrusive::list_base_hook<> {
+			  std::string name;
+			  int legs;
+			  A(std::string n, int l) : name{std::move(n)}, legs{l} {}
+			};
+			A a{"cat", 4};
+			boost::intrusive::list<A> list;
+			list.push_back(a);
+		优点:
+			没有元素的复制操作,存储的是原始对象,没有内存分配,效率高,也不会抛出异常.
+MPI库
+
+Coroutine库
+
+Uuid库
+
+Utility库
+
+Date Time 库
+
+Program Options库
