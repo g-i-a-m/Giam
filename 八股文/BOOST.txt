@@ -187,6 +187,10 @@
 			list.push_back(a);
 		优点:
 			没有元素的复制操作,存储的是原始对象,没有内存分配,效率高,也不会抛出异常.
+六:字符串处理
+	lexical_cast
+	property tree
+	filesystem
 MPI库
 
 Coroutine库
