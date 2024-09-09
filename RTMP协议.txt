@@ -1,8 +1,30 @@
 1>.RTMP基于TCP连接
-2>.建立tcp连接后
-    握手
+2>.RTMP握手
+    c0 c1 c2 s0 s1 s2
+    同步时间/随机数确认连接/加密秘钥
+3>.信令
+    Connect:应用名,版本,播放url,内容url, audio codec, video codec
+    _result:表示connect成功 _error:表示connect失败
+    createStream:请求创建流
+    _result:创建流成功,附带streamId
+    publish:携带streamId,推流名称,推流类型
+    onStatus:应答pushlish成功或失败
+    ...
+    deleteStream:携带streamId,停止推流
+    onStatus:应答停止成功或失败
+4>.组包
+    rtmp包头
+        format:指示了包头的长度和信息种类
+            0:完整头信息(创建流或修改流时使用)
+            1:(同一个块流)消息的后续部分,在时间戳或消息长度变化时使用
+            2:(同一个块流)消息的后续部分,在时间戳变化时使用
+            3:(同一个块流)消息的后续部分,在时间戳或消息长度都不变时使用
+        Type ID:指示内容类型或负载的性质
+            改变chunk大小, 通知丢弃消息, 应用层接收窗口(控制对端发送), 控制流量, 音频数据包, 视频
+    rtmp块头
+    负载长度(默认128 Bytes)
 
-3>.组包
+5>.rtmp窗口调整及策略
 
 延迟优化:
     除了常规的srs配置参数和tcp协议相关的优化外.
@@ -13,3 +35,27 @@
     动态调整推流码率,降低拥塞影响.
     优化服务器性能,减少转发的处理环节耗时.
     延迟监控调整调度策略.
+
+转封装:
+    初始化
+    创建输出上下文:avformat_alloc_output_context2(&output_ctx, NULL, "hls", output_url)
+    添加输出流:avformat_new_stream
+    设置HLS Muxer的选项:av_dict_set(&muxer_opts, "hls_time", "10", 0) 片段时长、播放列表类型参数
+    打开输出文件:avio_open
+    写入头信息:avformat_write_header
+    读取数据包:av_read_frame(input_ctx, &pkt)
+    转换PTS:av_rescale_q_rnd
+    写入输出文件:av_interleaved_write_frame
+        释放数据包:av_packet_unref
+    写入输出文件尾信息:av_write_trailer
+
+转码过程:
+    解码
+    缩放:
+        创建缩放上下文:sws_getContext 输入输出的分辨率和数据格式
+        创建缩放输出帧的缓存:av_frame_alloc
+        缩放:sws_scale
+        通过设置编码器上下文的帧率和时基降低帧率(即使输入帧率为60fps,设置后输出也是25fps,编码器内部自动调整)
+            output_codec_ctx->time_base = (AVRational){1, 25}; // 设置帧率
+            output_codec_ctx->framerate = (AVRational){25, 1}; // 设置帧率
+    编码
