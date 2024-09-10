@@ -59,3 +59,14 @@
             output_codec_ctx->time_base = (AVRational){1, 25}; // 设置帧率
             output_codec_ctx->framerate = (AVRational){25, 1}; // 设置帧率
     编码
+
+HLS直播拉流:
+    请求服务器获取直播m3u8文件的url
+    下载并解析m3u8文件
+        包含:主播放列表,子播放列表
+    选择播放列表并下载ts片
+    解码播放
+    循环获取更新m3u8文件.
+HLS快速更新列表的方式:
+    订阅更新(websocket/https)
+    EXT-X-MEDIA-SEQUENCE第一个片段的序列号和EXT-X-DISCONTINUITY-SEQUENCE不连续的序列号
